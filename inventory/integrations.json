@@ -1,0 +1,712 @@
+{
+  "version": 1,
+  "updated": "2026-11-17",
+  "statuses": [
+    "live",
+    "partial",
+    "blocked",
+    "deferred"
+  ],
+  "note": "Registry of reusable external integrations. One hub repo per integration; hub owns the contract, the failure matrix and the verify gate. Secrets are never stored here, only environment variable names.",
+  "remote_pattern": "https://github.com/AntiManager/{dir}.git",
+  "remotes_created": "2026-11-17",
+  "hubs": [
+    {
+      "key": "bitrix24",
+      "dir": "integration-bitrix24",
+      "slug": "bitrix24",
+      "title": "Bitrix24 CRM",
+      "service": "Bitrix24 REST via incoming webhook",
+      "status": "live",
+      "mode": "read-only",
+      "summary": "Read-only CRM extraction (deals, leads, companies, contacts, requisites, stage history, pipelines, statuses, users, quotes) and generic REST access through a local MCP server.",
+      "consumers": [
+        "linear-tech-bi: scripts/bitrix_extract.py (funnel + stage grain export)",
+        "linear-tech: cms order schema bitrix_lead_id (inbound reference only)",
+        "global MCP bitrix24: ~/.config/kilo/bitrix-mcp/server.py (generic REST + scope check)"
+      ],
+      "auth": [
+        "BITRIX_WEBHOOK_URL"
+      ],
+      "auth_notes": "Incoming webhook URL is a user-scoped secret; User env only. Webhook base already ends with /rest/<user>/<token>/. Never append another /rest/.",
+      "endpoints": [
+        "POST {webhook}<method>.json  (crm.deal.list, crm.lead.list, crm.company.list, crm.contact.list, crm.requisite.list)",
+        "crm.stagehistory.list with entityTypeId=2 (deals) and entityTypeId=1 (leads)",
+        "crm.dealcategory.list, crm.status.list, crm.deal.fields, crm.quote.list, user.get",
+        "batch: one HTTP call, up to 50 commands"
+      ],
+      "limits": [
+        "2 requests/second per webhook; burst returns 503 QUERY_LIMIT_EXCEEDED",
+        "Page size 50; follow result.next (start=NEXT) until absent",
+        "select must enumerate every field; * is not supported for list methods"
+      ],
+      "gotchas": [
+        "UF_CRM_* custom fields carry the funnel segmentation used by linear-tech-bi; dropping them silently breaks the analytical model",
+        "STAGE_ID alone is ambiguous across pipelines: join with CATEGORY_ID and resolve names via crm.status.list",
+        "crm.deal.list returns rows from all pipelines; filter CATEGORY_ID explicitly",
+        "Nothing in this hub writes to Bitrix; mutation methods must not be added without an explicit user decision"
+      ],
+      "failures": [
+        [
+          "401 invalid_credentials",
+          "webhook revoked or token rotated",
+          "re-issue incoming webhook, update User env BITRIX_WEBHOOK_URL, rerun verify",
+          "bitrix_extract.py handles urllib.error only"
+        ],
+        [
+          "503 QUERY_LIMIT_EXCEEDED",
+          "more than 2 rps or too many parallel workers",
+          "serialize calls, sleep -Sleep 0.6, retry with backoff",
+          "observed at full pipeline export"
+        ],
+        [
+          "empty list, no error",
+          "wrong filter or field missing from select",
+          "check filter key spelling and that the field is in select",
+          "crm.deal.list returns total 0"
+        ],
+        [
+          "duplicate deals across reports",
+          "no CATEGORY_ID filter and joining by STAGE_ID only",
+          "group by (CATEGORY_ID, STAGE_ID)",
+          "-"
+        ]
+      ],
+      "refs": [
+        "linear-tech-bi/scripts/bitrix_extract.py:1-26 (output contract)",
+        "linear-tech-bi/scripts/README.md (BITRIX_WEBHOOK_URL setup)",
+        "~/.config/kilo/bitrix-mcp/INVENTORY.md (scope inventory)"
+      ],
+      "smoke": "Invoke-RestMethod -Uri ($env:BITRIX_WEBHOOK_URL + 'profile.json') -TimeoutSec 20 | Out-Null; 'bitrix profile ok'",
+      "evals": [
+        "verify.ps1 -Offline exits 0 and prints env state",
+        "verify.ps1 -Live returns the portal profile name",
+        "crm.deal.list with select=ID,CATEGORY_ID,STAGE_ID returns total > 0"
+      ]
+    },
+    {
+      "key": "email",
+      "dir": "integration-email",
+      "slug": "email",
+      "title": "Transactional email (SMTP/IMAP)",
+      "service": "Yandex Cloud Postbox SMTP for sending, Thunderbird MCP for reading",
+      "status": "live",
+      "mode": "send + read",
+      "summary": "One contract for outbound transactional mail (stdlib smtplib, Postbox :465 or :587+STARTTLS) and inbound/reading workflows (Thunderbird MCP). Fail-safe semantics: send returns sent|skipped|failed and never raises.",
+      "consumers": [
+        "Proc_library: backend/app/plugins/notifications/mailer.py (only SMTP send point)",
+        "factory-system: GoTrue SMTP (internal supabase-mail, not Postbox)",
+        "project1: template .env only",
+        "global MCP thunderbird: C:/Users/Eugene/commonpost-mcp/mcp-bridge.cjs (read/compose/calendar)"
+      ],
+      "auth": [
+        "MAIL_SMTP_HOST",
+        "MAIL_SMTP_PORT",
+        "MAIL_SMTP_USER",
+        "MAIL_SMTP_PASSWORD",
+        "MAIL_SMTP_FROM"
+      ],
+      "auth_notes": "Application maps these to mail_smtp_* in AppConfig. Thunderbird side has no env vars: the MCP reads the local profile. Never log body, recipient or password.",
+      "endpoints": [
+        "SMTP submit: smtp.postbox.yandexcloud.net:465 (SSL) or :587 (STARTTLS)",
+        "Thunderbird MCP: listFolders, searchMessages, getMessage, replyToMessage, saveDraft, sendMail"
+      ],
+      "limits": [
+        "Client timeout 30 s; callers offload the sync call to a threadpool",
+        "Postbox enforces per-account sending quotas; 5xx is usually quota or reputation, not code",
+        "MCP compose opens a review window by default; do not claim a message was sent without a send result"
+      ],
+      "gotchas": [
+        "Plain SMTP without STARTTLS is forbidden: credentials and body would travel in clear text",
+        "Config may be intentionally incomplete (dev): mailer returns 'skipped' with a one-time warning, tests rely on it",
+        "factory-system does not use Postbox: GoTrue talks to the internal supabase-mail container",
+        "Reply/forward recipients are computed by Thunderbird when to/cc are empty; do not hand-build them"
+      ],
+      "failures": [
+        [
+          "535 5.7.8 auth failed",
+          "wrong app password or user",
+          "regenerate Postbox app password, update User env, rerun verify -Live",
+          "mailer.send logs status only"
+        ],
+        [
+          "554 5.7.1 message rejected",
+          "spam/reputation filter",
+          "check subject/body, sender domain SPF/DKIM",
+          "-"
+        ],
+        [
+          "timeout after 30 s",
+          "port 465 blocked or wrong host",
+          "try 587+STARTTLS, verify egress",
+          "mailer.send failed"
+        ],
+        [
+          "'skipped' on every send",
+          "incomplete config",
+          "compare env names with CONTRACT.md",
+          "mail_ready false"
+        ]
+      ],
+      "refs": [
+        "Proc_library/backend/app/plugins/notifications/mailer.py:1-11 (send contract)",
+        "Proc_library/backend/app/plugins/notifications/mailer.py:72-89 (SSL vs STARTTLS)",
+        "Proc_library/docker-compose.prod.yml:83-87 (env wiring)",
+        "factory-system/.infra/supabase/docker-compose.yml:124-129 (GoTrue SMTP)"
+      ],
+      "smoke": "if (-not $env:MAIL_SMTP_HOST) { throw 'no smtp host' }; $c = New-Object Net.Sockets.TcpClient; $c.Connect($env:MAIL_SMTP_HOST, [int]$env:MAIL_SMTP_PORT); $c.Close(); \"smtp tcp $($env:MAIL_SMTP_HOST):$($env:MAIL_SMTP_PORT) reachable\"",
+      "evals": [
+        "verify.ps1 -Offline exits 0",
+        "verify.ps1 -Live reaches the SMTP host and port over TCP",
+        "a send attempt with incomplete config returns skipped and does not raise"
+      ]
+    },
+    {
+      "key": "headhunter",
+      "dir": "integration-headhunter",
+      "slug": "headhunter",
+      "title": "HeadHunter (hh.ru) API",
+      "service": "Official hh.ru REST API (api.hh.ru)",
+      "status": "partial",
+      "mode": "read",
+      "summary": "Async client for the official hh.ru API. Authentication is verified via /me; vacancy search is currently blocked by DDoS-Guard for non-browser clients. SuperJob is configured but has no client.",
+      "consumers": [
+        "HHRU: src/hhru/api/client.py, src/hhru/config.py (reference implementation; becomes a consumer of this hub)",
+        "HHRU: .kilo/skills/hhru-api, hhru-analyst, vacancy-analysis, resume-scoring (business skills stay in HHRU)"
+      ],
+      "auth": [
+        "HH_ACCESS_TOKEN",
+        "HH_CLIENT_ID",
+        "HH_CLIENT_SECRET",
+        "HH_REDIRECT_URI",
+        "HH_USER_TOKEN",
+        "HH_REFRESH_TOKEN",
+        "HH_APP_TOKEN",
+        "SJ_CLIENT_ID",
+        "SJ_SECRET_KEY"
+      ],
+      "auth_notes": "Token is read from HH_ACCESS_TOKEN and never hardcoded. Refresh flow is not implemented: an expired token fails as 403 and needs a manual re-issue.",
+      "endpoints": [
+        "GET /me (auth check)",
+        "GET /vacancies?text=... (currently 403 DDoS-Guard for non-browser clients)",
+        "GET /vacancies/{id}, GET /dictionaries, GET /areas"
+      ],
+      "limits": [
+        "User-Agent is mandatory and identifies the app",
+        "Per-IP and per-token rate limits; 403 with a captcha page means DDoS-Guard, not auth",
+        "Pagination via page/per_page (max 100)"
+      ],
+      "gotchas": [
+        "GET /vacancies returns 403 from DDoS-Guard with and without a token, locally and from the VPS; a browser-grade client (Playwright) or an hh whitelist is required",
+        "/me returning 200 proves auth only, not access to the vacancy catalog",
+        "This repo is the single source of the API client; business analysis belongs to consumer repos"
+      ],
+      "failures": [
+        [
+          "403 on /vacancies",
+          "DDoS-Guard blocks non-browser clients",
+          "use Playwright/browser transport or request a whitelist; do not retry in a loop",
+          "HHRU/README.md status 2026-11-05"
+        ],
+        [
+          "403 on /me",
+          "token expired or revoked",
+          "re-issue OAuth token, update User env",
+          "-"
+        ],
+        [
+          "401 without Authorization",
+          "HH_ACCESS_TOKEN missing",
+          "set User env, rerun verify",
+          "client.py:22-27"
+        ]
+      ],
+      "refs": [
+        "HHRU/src/hhru/api/client.py:1-62",
+        "HHRU/src/hhru/config.py:1-30",
+        "HHRU/README.md (status and blocked endpoint)"
+      ],
+      "smoke": "$h = @{ 'User-Agent' = 'IntegrationHub/1.0' }; if ($env:HH_ACCESS_TOKEN) { $h['Authorization'] = 'Bearer ' + $env:HH_ACCESS_TOKEN }; $r = Invoke-RestMethod -Uri 'https://api.hh.ru/me' -Headers $h -TimeoutSec 20; \"hh me: $($r.id)\"",
+      "evals": [
+        "verify.ps1 -Offline exits 0",
+        "verify.ps1 -Live prints an hh user id",
+        "GET /vacancies documents 403 and does not raise an unhandled exception"
+      ]
+    },
+    {
+      "key": "yandex-metrica",
+      "dir": "integration-yandex-metrica",
+      "slug": "yandex-metrica",
+      "title": "Yandex Metrica",
+      "service": "Yandex Metrica JS counter (live) and Metrica API (planned)",
+      "status": "partial",
+      "mode": "client tracking live, API not connected",
+      "summary": "Contracts for counter and goal tracking on sites, plus the access plan and the report contract for Metrica API (Management, Reporting, Logs).",
+      "consumers": [
+        "AntiManager: site/js/analytics.js (METRIKA_ID 111010335, reachGoal)",
+        "exhomebird: src/layouts/BaseLayout.astro:97 (counter snippet)",
+        "linear-tech: frontend/src/components/layout/Analytics.tsx:20 (counter snippet)"
+      ],
+      "auth": [
+        "YANDEX_METRIKA_TOKEN"
+      ],
+      "auth_notes": "Token is a Yandex OAuth app token with metrika:read (and metrika:write only for management). No Direct application is required. Not yet issued: see Access plan in CONTRACT.md.",
+      "endpoints": [
+        "Client: ym(<counterId>, 'reachGoal', '<goal>', params)",
+        "API: GET https://api-metrika.yandex.net/management/v1/counters",
+        "API: GET /stat/v1/data (reporting), /stat/v1/data/bytime, /stat/v1/data/drilldown",
+        "API: Logs API for raw visits/hits export"
+      ],
+      "limits": [
+        "Reporting API quotas are per-account; heavy segments trigger sampling",
+        "A report over sampled data is not exact; check the sampling field before comparing periods",
+        "Counter time zone differs from the workstation time zone: always report the counter TZ"
+      ],
+      "gotchas": [
+        "Counter id is duplicated in AntiManager site/base.html and site/js/analytics.js; they must stay in sync",
+        "window.ym may be absent (adblock); analytics code must never break the page",
+        "Goal names are created in the UI; only numeric goal ids are stable for reports",
+        "JS counter does not require any token; the API does"
+      ],
+      "failures": [
+        [
+          "403 Access is denied",
+          "token has no metrika:read or was issued for another account",
+          "re-issue with the right scope and account",
+          "yandex.ru/dev/metrika authorization"
+        ],
+        [
+          "report total differs from UI",
+          "sampling or attribution window",
+          "compare accuracy/sampling fields, align attribution",
+          "-"
+        ],
+        [
+          "no goal events",
+          "goal id mismatch or ym not loaded",
+          "check counter id, goal id, adblock",
+          "analytics.js:4-10"
+        ]
+      ],
+      "refs": [
+        "AntiManager/site/js/analytics.js:1-20",
+        "AntiManager/site/build.js:1976 (counter injection)",
+        "exhomebird/src/layouts/BaseLayout.astro:97",
+        "linear-tech/frontend/src/components/layout/Analytics.tsx:20",
+        "https://yandex.ru/dev/metrika/ru/llms.txt (doc index)"
+      ],
+      "smoke": "if (-not $env:YANDEX_METRIKA_TOKEN) { throw 'no token' }; $h = @{ Authorization = 'OAuth ' + $env:YANDEX_METRIKA_TOKEN }; $r = Invoke-RestMethod -Uri 'https://api-metrika.yandex.net/management/v1/counters' -Headers $h -TimeoutSec 20; \"counters: $($r.counters.Count)\"",
+      "evals": [
+        "verify.ps1 -Offline exits 0",
+        "verify.ps1 -Live lists at least one counter",
+        "a counter id used in a consumer repo matches this hub registry"
+      ]
+    },
+    {
+      "key": "yandex-direct",
+      "dir": "integration-yandex-direct",
+      "slug": "yandex-direct",
+      "title": "Yandex Direct",
+      "service": "Yandex Direct API v5 (JSON) and v501 (Unified campaigns, responsive ads)",
+      "status": "blocked",
+      "mode": "read + write (gated)",
+      "summary": "Campaign management contract for Direct API v5/v501, held blocked until OAuth app + approved API application exist. Sandbox first; live writes only with explicit confirmation and read-only default.",
+      "consumers": [
+        "none yet (planned: marketing/PPC workflows, AntiManager and linear-tech landing campaigns)"
+      ],
+      "auth": [
+        "YANDEX_DIRECT_TOKEN",
+        "YANDEX_DIRECT_CLIENT_LOGIN",
+        "YANDEX_DIRECT_SANDBOX"
+      ],
+      "auth_notes": "Requires an OAuth app with direct:api AND an approved access request in the Direct cabinet (Settings -> API). Approval takes 1 hour to 3 days, up to 7 days at peak. Agency accounts pass Client-Login per call.",
+      "endpoints": [
+        "POST https://api.direct.yandex.com/json/v5/<service> (campaigns, adgroups, ads, keywords, bids, reports, dictionaries)",
+        "POST https://api.direct.yandex.com/json/v501/... (UnifiedCampaign, responsive ads, callouts linking)",
+        "POST https://api-sandbox.direct.yandex.com/json/v5/... (sandbox)",
+        "Reports service is asynchronous: poll with retryIn header"
+      ],
+      "limits": [
+        "Units budget per day; Units header reports spend and remaining points",
+        "Reports API: at most one request per 10 seconds (error 56)",
+        "Max 10 campaign ids per request; 1000 objects per mutation",
+        "204 empty response means the API is disabled on the Yandex side, not a client error"
+      ],
+      "gotchas": [
+        "v5 returns Unified campaigns as TEXT_CAMPAIGN without their settings; read them via v501",
+        "Sandbox and live use different hosts and separate tokens",
+        "Writes must be blocked by default: read-only flag plus confirm argument before any mutation"
+      ],
+      "failures": [
+        [
+          "403 no access",
+          "API application not approved",
+          "submit the access request and wait for approval",
+          "yandex.ru/dev/direct/doc/ru/access-request.md"
+        ],
+        [
+          "error 56",
+          "reports requested more often than 1/10s",
+          "sleep 10 s between report calls",
+          "direct docs, best-practice"
+        ],
+        [
+          "204 empty body",
+          "API disabled on Yandex side",
+          "stop retrying, check the Direct interface",
+          "Silverov skill v2.0.1"
+        ],
+        [
+          "53 / units exhausted",
+          "daily points spent",
+          "wait for reset or reduce requests",
+          "Units header"
+        ]
+      ],
+      "refs": [
+        "https://yandex.ru/dev/direct/doc/ru/llms.txt (full doc index)",
+        "https://yandex.ru/dev/direct/doc/ru/access-request.md",
+        "https://github.com/Silverov/yandex-direct-skill (audit methodology, MIT)"
+      ],
+      "smoke": "if (-not $env:YANDEX_DIRECT_TOKEN) { throw 'no token' }; $h = @{ Authorization = 'Bearer ' + $env:YANDEX_DIRECT_TOKEN; 'Accept-Language' = 'ru' }; $b = '{\"method\":\"get\",\"params\":{\"SelectionCriteria\":{},\"FieldNames\":[\"Id\",\"Name\"]}}'; $r = Invoke-RestMethod -Uri 'https://api.direct.yandex.com/json/v5/campaigns' -Method Post -Headers $h -ContentType 'application/json; charset=utf-8' -Body $b -TimeoutSec 30; \"campaigns: $($r.result.Campaigns.Count)\"",
+      "evals": [
+        "verify.ps1 -Offline exits 0 and reports BLOCKED without a token",
+        "verify.ps1 -Live (sandbox) lists campaigns",
+        "a mutation call without confirm is refused"
+      ]
+    },
+    {
+      "key": "yandex-wordstat",
+      "dir": "integration-yandex-wordstat",
+      "slug": "yandex-wordstat",
+      "title": "Yandex Wordstat",
+      "service": "Wordstat API inside Yandex Search API (Yandex Cloud)",
+      "status": "blocked",
+      "mode": "read",
+      "summary": "Keyword frequency, dynamics and regional distribution. The legacy api.wordstat.yandex.net endpoints are dead (404); access now requires a Yandex Cloud billing account, folder and service-account API key, and is paid per request.",
+      "consumers": [
+        "none yet (planned: semantic cores for AntiManager, exhomebird, linear-tech)"
+      ],
+      "auth": [
+        "YC_API_KEY",
+        "YC_FOLDER_ID"
+      ],
+      "auth_notes": "Service account with search-api.executor (sources also name search-api.webSearch.user; confirm in console) plus a billing account. OAuth tokens issued after 2026-06-01 are not exchangeable for IAM: use an API key. Header: Authorization: Api-key <key>.",
+      "endpoints": [
+        "POST https://searchapi.api.cloud.yandex.net/v2/wordstat/topRequests",
+        "POST /v2/wordstat/dynamics",
+        "POST /v2/wordstat/regions",
+        "POST /v2/wordstat/getRegionsTree (free)"
+      ],
+      "limits": [
+        "Pricing: 20 RUB per 1000 topRequests/dynamics, 50 RUB per 1000 regions, tree is free",
+        "Default quotas: 10 requests/second and 100/hour; associations capped at 20",
+        "numPhrases is mandatory despite docs claiming a default: 1..2000",
+        "Phrase length up to 400 chars, Wordstat operators supported"
+      ],
+      "gotchas": [
+        "Numbers arrive as strings",
+        "Left column frequency includes all queries containing the words; exact frequency needs quotes and exclamation marks and costs a separate request per phrase",
+        "Region ids are Yandex ids: 213 Moscow, 2 Saint Petersburg, 225 Russia",
+        "Failed requests are not billed"
+      ],
+      "failures": [
+        [
+          "404 on api.wordstat.yandex.net",
+          "legacy API removed",
+          "use Search API v2",
+          "ispolin review 2026-10-17"
+        ],
+        [
+          "400 numPhrases range",
+          "field omitted",
+          "always send numPhrases 1..2000",
+          "observed 2026-10-17"
+        ],
+        [
+          "403 no access",
+          "service account role missing or billing inactive",
+          "grant role, activate billing",
+          "-"
+        ],
+        [
+          "0 results with empty lists",
+          "no matches, not an error",
+          "treat totalCount 0 as empty, not failure",
+          "-"
+        ]
+      ],
+      "refs": [
+        "https://yandex.ru/support2/wordstat/ru/content/api-wordstat (redirect to Search API)",
+        "https://github.com/seyka-ai/yandex-tools-mcp (MIT, yandex-wordstat-mcp)",
+        "https://github.com/Yurich-ru/yandex-ads-mcp (5 Wordstat tools)"
+      ],
+      "smoke": "if (-not $env:YC_API_KEY) { throw 'no key' }; $h = @{ Authorization = 'Api-key ' + $env:YC_API_KEY }; $b = '{\"folderId\":\"' + $env:YC_FOLDER_ID + '\",\"phrase\":\"натяжные потолки\",\"numPhrases\":5}'; $r = Invoke-RestMethod -Uri 'https://searchapi.api.cloud.yandex.net/v2/wordstat/topRequests' -Method Post -Headers $h -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($b)) -TimeoutSec 30; \"total: $($r.totalCount)\"",
+      "evals": [
+        "verify.ps1 -Offline exits 0 and reports BLOCKED without a key",
+        "verify.ps1 -Live returns totalCount for a seed phrase",
+        "a request without numPhrases is rejected by the API (documented behaviour)"
+      ]
+    },
+    {
+      "key": "git-remotes",
+      "dir": "integration-git-remotes",
+      "slug": "git-remotes",
+      "title": "GitHub and GitVerse remotes",
+      "service": "Git remotes, gh CLI, CI workflows",
+      "status": "live",
+      "mode": "push + CI",
+      "summary": "One contract for repository remotes (GitHub origin plus optional GitVerse mirror), credential handling and the CI baseline used by projects.",
+      "consumers": [
+        "all repos: dual push policy and remote naming",
+        "linear-tech, factory-ui-template: .github/workflows/ci.yml",
+        "global: ~/.config/gitverse-credential.ps1 (token helper)"
+      ],
+      "auth": [
+        "GH_TOKEN",
+        "GITVERSE_TOKEN"
+      ],
+      "auth_notes": "Tokens live in User env (single-user machine) and are inherited by processes. Never embed them in remote URLs, never print values. gh may not be on PATH until VS Code restarts; use the full path then.",
+      "endpoints": [
+        "https://github.com/AntiManager/<repo>.git",
+        "https://gitverse.ru/AntiManager/<repo>.git",
+        "gh api / gh pr / gh run (GitHub CLI)"
+      ],
+      "limits": [
+        "Never force-push",
+        "Push to all configured push URLs",
+        "GitVerse API needs Accept: application/vnd.gitverse.object+json;version=1",
+        "Token changes require a process restart to become visible"
+      ],
+      "gotchas": [
+        "A repo may have origin plus a second push URL; verify with git remote -v before adding one",
+        "gh not found is a PATH problem after token rotation, not an auth failure",
+        "CI runs lint and typecheck only; e2e stays local"
+      ],
+      "failures": [
+        [
+          "403 on push",
+          "token expired or missing repo scope",
+          "gh auth status, re-issue token, restart",
+          "-"
+        ],
+        [
+          "gh: command not found",
+          "PATH snapshot before install/restart",
+          "restart VS Code or use the full path",
+          "global AGENTS.md env notes"
+        ],
+        [
+          "mirror ahead/behind",
+          "second push URL stale",
+          "push to each URL explicitly; never force",
+          "-"
+        ]
+      ],
+      "refs": [
+        "PROJECTS_INDEX.md:59-65 (remote conventions)",
+        "~/.config/gitverse-credential.ps1",
+        "linear-tech/.github/workflows/ci.yml"
+      ],
+      "smoke": "$r = git -C 'C:/Work/Python/linear-tech' ls-remote --heads origin 2>$null | Select-Object -First 1; if (-not $r) { throw 'no remote heads' }; $r",
+      "evals": [
+        "verify.ps1 -Offline exits 0",
+        "verify.ps1 -Live lists at least one remote head",
+        "git remote -v shows no credentials in URLs"
+      ]
+    },
+    {
+      "key": "vps-deploy",
+      "dir": "integration-vps-deploy",
+      "slug": "vps-deploy",
+      "title": "VPS deploy (SSH, rsync, Caddy)",
+      "service": "Remote deploy to factory-vps",
+      "status": "live",
+      "mode": "deploy",
+      "summary": "Per-repo deploy scripts over ssh/rsync with Caddy in front. Defines what is shared (host, key, ports, log paths) and what stays repo-local.",
+      "consumers": [
+        "factory-system: vps.sh:25",
+        "exhomebird: deploy/deploy.ps1",
+        "AntiManager: site/deploy.ps1",
+        "Proc_library: scripts/deploy_prod.sh:18"
+      ],
+      "auth": [
+        "VPS_HOST",
+        "VPS_USER",
+        "VPS_SSH_KEY"
+      ],
+      "auth_notes": "Key-based auth only. Scripts reference the host and key from env or their own config; the hub stores names, not values.",
+      "endpoints": [
+        "ssh <user>@<host> (systemd, docker compose)",
+        "rsync -az --delete (release artifacts)",
+        "Caddy reverse proxy config on the host"
+      ],
+      "limits": [
+        "One repo owns one 10-port block; never move another repo's ports",
+        "Never docker compose down -v on the shared volume (Supabase DB holds Proc_library data)",
+        "Deploy only from a committed tree; record live VERSION and SHA"
+      ],
+      "gotchas": [
+        "Some deploys copy files, others rebuild containers; the script is the contract, not a shared helper",
+        "Windows line endings in .sh break remote execution; keep LF",
+        "The host may be reachable only through the local tunnel: check connectivity before a deploy"
+      ],
+      "failures": [
+        [
+          "Permission denied (publickey)",
+          "key not loaded or wrong user",
+          "check ssh -i, User env VPS_SSH_KEY",
+          "-"
+        ],
+        [
+          "502 after deploy",
+          "container up but Caddy route stale",
+          "reload Caddy, check logs",
+          "-"
+        ],
+        [
+          "data loss",
+          "docker compose down -v",
+          "never run it; restore from backup",
+          "global AGENTS.md safety"
+        ],
+        [
+          "disk full",
+          "old images/logs",
+          "prune images, rotate logs",
+          "-"
+        ]
+      ],
+      "refs": [
+        "factory-system/vps.sh:1-30",
+        "exhomebird/deploy/deploy.ps1",
+        "Proc_library/scripts/deploy_prod.sh:1-30",
+        "PROJECTS_INDEX.md:51-57 (port blocks)"
+      ],
+      "smoke": "if (-not $env:VPS_HOST) { throw 'no host' }; ssh -o BatchMode=yes -o ConnectTimeout=10 ($env:VPS_USER + '@' + $env:VPS_HOST) 'echo ok'",
+      "evals": [
+        "verify.ps1 -Offline exits 0",
+        "verify.ps1 -Live returns ok over ssh",
+        "a repo deploy script references env names documented here"
+      ]
+    },
+    {
+      "key": "telegram",
+      "dir": "integration-telegram",
+      "slug": "telegram",
+      "title": "Telegram Bot API",
+      "service": "Telegram Bot API (feedback relay)",
+      "status": "live",
+      "mode": "write",
+      "summary": "Outbound notifications and inbound form relay through a bot. Includes the anti-abuse contract (rate limit, PoW challenge, quarantine chat).",
+      "consumers": [
+        "AntiManager: site/feedback/server.py (site contact forms -> chat)",
+        "AntiManager: site/feedback/.env.example (env names)"
+      ],
+      "auth": [
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+        "TELEGRAM_API_BASE",
+        "TELEGRAM_QUARANTINE_CHAT_ID"
+      ],
+      "auth_notes": "Bot token is a full-access secret: anyone with it controls the bot. The challenge signing key is derived from the token unless CHALLENGE_SECRET is set.",
+      "endpoints": [
+        "POST {api_base}/bot<token>/sendMessage",
+        "getMe for a token check"
+      ],
+      "limits": [
+        "Local rate limit 5 requests / 600 s per client, global 120 / 3600 s",
+        "Telegram caps ~30 messages/second per bot; bots cannot initiate chats",
+        "Message length 4096 chars"
+      ],
+      "gotchas": [
+        "TELEGRAM_API_BASE exists for proxies; default https://api.telegram.org",
+        "Text is HTML-parsed: escape user input",
+        "Quarantine chat receives suspicious submissions; it is not a backup of the main chat"
+      ],
+      "failures": [
+        [
+          "401 Unauthorized",
+          "token revoked",
+          "re-issue via BotFather, update User env",
+          "-"
+        ],
+        [
+          "400 chat not found",
+          "bot not a member or wrong chat id",
+          "add bot to chat, verify id",
+          "-"
+        ],
+        [
+          "429 Too Many Requests",
+          "flood control",
+          "honour retry_after",
+          "-"
+        ],
+        [
+          "messages not delivered",
+          "HTML parse error in text",
+          "escape &, <, >",
+          "server.py send path"
+        ]
+      ],
+      "refs": [
+        "AntiManager/site/feedback/server.py:61-90 (config)",
+        "AntiManager/site/feedback/.env.example (env names only)"
+      ],
+      "smoke": "if (-not $env:TELEGRAM_BOT_TOKEN) { throw 'no token' }; $r = Invoke-RestMethod -Uri ('https://api.telegram.org/bot' + $env:TELEGRAM_BOT_TOKEN + '/getMe') -TimeoutSec 20; \"bot: $($r.result.username)\"",
+      "evals": [
+        "verify.ps1 -Offline exits 0",
+        "verify.ps1 -Live returns the bot username",
+        "an oversized or unescaped message is rejected before the HTTP call"
+      ]
+    }
+  ],
+  "deferred": [
+    {
+      "key": "nocodb",
+      "reason": "Removed 2026-11-17 by user decision: NocoDB will not be used. Utils/scripts/nocodb.py and nocodbtest.py stay in Utils and are now unowned; factory-system vps.sh still runs a container named nocodb.",
+      "consumers": [
+        "Utils"
+      ]
+    },
+    {
+      "key": "1c-exchange",
+      "reason": "5 repos consume 1C xlsx/OLAP exports, but the boundary is file-based, not a service API. Needs a data-contract hub, not an integration hub.",
+      "consumers": [
+        "linear-tech-bi",
+        "PowerBI_architecture",
+        "FOT_system",
+        "Zakup",
+        "NSP"
+      ]
+    },
+    {
+      "key": "llm-providers",
+      "reason": "DeepSeek (Zakup) and Ollama (linear-tech-bi, indexing) are configured per project; no shared credential or failure matrix yet.",
+      "consumers": [
+        "Zakup",
+        "linear-tech-bi"
+      ]
+    },
+    {
+      "key": "google-translate",
+      "reason": "Single consumer (Excell_Translator), no credentials, low reuse.",
+      "consumers": [
+        "Excell_Translator"
+      ]
+    },
+    {
+      "key": "netbird",
+      "reason": "Covered by the global skill netbird-demo-gateway; no code in repos.",
+      "consumers": []
+    },
+    {
+      "key": "obsidian-vault",
+      "reason": "Personal data class: local MCP, no GitHub sync of content. Deferred by the user on 2026-11-17.",
+      "consumers": [
+        "obsidian MCP (global config)"
+      ]
+    }
+  ]
+}

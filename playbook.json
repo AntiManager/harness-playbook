@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "updated": "2026-11-05",
+  "statuses": ["proven", "candidate", "deprecated"],
+  "enforcement": ["deterministic", "advisory"],
+  "token_cost": ["lowers", "neutral", "raises"],
+  "cards": [
+    { "id": "HP-001", "slug": "minimal-agents-md", "title": "Minimal autoloaded AGENTS.md", "status": "proven", "enforcement": "deterministic", "token_cost": "lowers" },
+    { "id": "HP-002", "slug": "boot-trio-instructions", "title": "Boot trio in kilo.json instructions", "status": "proven", "enforcement": "deterministic", "token_cost": "lowers" },
+    { "id": "HP-003", "slug": "explicit-permission-model", "title": "Explicit permission model", "status": "proven", "enforcement": "deterministic", "token_cost": "neutral" },
+    { "id": "HP-004", "slug": "memory-write-last", "title": "Memory write-last, one Write per file", "status": "proven", "enforcement": "advisory", "token_cost": "lowers" },
+    { "id": "HP-005", "slug": "executable-closeout", "title": "Executable closeout command", "status": "candidate", "enforcement": "deterministic", "token_cost": "lowers" },
+    { "id": "HP-006", "slug": "router-skill", "title": "Router skill plus on-demand references", "status": "candidate", "enforcement": "advisory", "token_cost": "lowers" },
+    { "id": "HP-007", "slug": "readonly-verification", "title": "Read-only verification scripts as acceptance", "status": "proven", "enforcement": "deterministic", "token_cost": "neutral" },
+    { "id": "HP-008", "slug": "scratch-and-ignore", "title": "Ignored scratch directory", "status": "candidate", "enforcement": "deterministic", "token_cost": "neutral" },
+    { "id": "HP-009", "slug": "reused-project-commands", "title": "Reused project commands", "status": "proven", "enforcement": "deterministic", "token_cost": "neutral" },
+    { "id": "HP-010", "slug": "delegation-policy", "title": "Delegation and subagent policy", "status": "candidate", "enforcement": "advisory", "token_cost": "lowers" },
+    { "id": "HP-011", "slug": "plan-lifecycle", "title": "Plan, execution log and retro", "status": "proven", "enforcement": "advisory", "token_cost": "neutral" },
+    { "id": "HP-012", "slug": "project-skills-path", "title": "Project skills under .kilo/skills", "status": "proven", "enforcement": "deterministic", "token_cost": "neutral" },
+    { "id": "HP-013", "slug": "spec-before-plan", "title": "SPEC before plan on ambiguous work", "status": "candidate", "enforcement": "advisory", "token_cost": "neutral" },
+    { "id": "HP-014", "slug": "nested-agents-md", "title": "Nested AGENTS.md for a subproject", "status": "candidate", "enforcement": "deterministic", "token_cost": "lowers" },
+    { "id": "HP-015", "slug": "runnable-verification", "title": "Runnable verification recipe", "status": "proven", "enforcement": "deterministic", "token_cost": "neutral" },
+    { "id": "HP-016", "slug": "deterministic-vs-advisory", "title": "Deterministic vs advisory rules", "status": "proven", "enforcement": "deterministic", "token_cost": "neutral" }
+  ],
+  "archetypes": [
+    { "slug": "desktop-analytics", "status": "proven", "projects": ["FOT_system", "NSP"] },
+    { "slug": "desktop-migration", "status": "proven", "projects": ["Zakup", "PowerBI_architecture"] },
+    { "slug": "web-platform", "status": "proven", "projects": ["factory-system", "factory-ui-template"] },
+    { "slug": "content-site", "status": "proven", "projects": ["exhomebird", "AntiManager", "linear-tech"] },
+    { "slug": "data-etl", "status": "proven", "projects": ["HHRU", "Proc_library", "Zagruzka_personala"] }
+  ],
+  "decisions": [
+    { "id": "0001", "slug": "model-policy", "status": "accepted" },
+    { "id": "0002", "slug": "skills-path", "status": "accepted" },
+    { "id": "0003", "slug": "autoload-set", "status": "accepted" },
+    { "id": "0004", "slug": "cleanup-scope", "status": "accepted" },
+    { "id": "0005", "slug": "agent-vs-skill", "status": "accepted" }
+  ],
+  "templates": [
+    "AGENTS.min.md",
+    "AGENTS.nested.md",
+    "SPEC.md",
+    "kilo.json.min.jsonc",
+    "memory/project_brief.md",
+    "memory/active_context.md",
+    "memory/progress.md",
+    "SKILL.md.tmpl",
+    "command.md.tmpl",
+    "command.verify.md",
+    "harness.md"
+  ]
+}
