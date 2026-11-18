@@ -893,6 +893,7 @@
       "service": "Yandex Disk REST API v1",
       "status": "blocked",
       "mode": "read + write (gated)",
+      "contract_version": 2,
       "summary": "File storage over the Disk REST API: metadata, listing, upload and download by temporary href, copy, move, delete, publish and trash. App-folder access is the default least-privilege mode.",
       "consumers": [
         "exhomebird: media archive (planned)",
@@ -947,6 +948,12 @@
           "-"
         ],
         [
+          "429 Too Many Requests",
+          "the request rate limit is exceeded (shared by every consumer)",
+          "back off 2s, 4s, 8s and serialize bulk transfers; do not retry immediately",
+          "-"
+        ],
+        [
           "202 with no file yet",
           "asynchronous operation",
           "poll the operation href until it reports success",
@@ -957,11 +964,67 @@
         "https://yandex.ru/dev/disk/api/concepts/quickstart.html (scopes and header)",
         "https://yandex.ru/dev/disk/api/reference/ (REST reference)"
       ],
+      "extra_sections": [
+        {
+          "title": "Storage layout and multi-consumer rules",
+          "body": "All consumers share one app folder. Layout: `disk:/Приложения/<app>/<consumer>/<YYYY>/<file>`.\n\n1. Each consumer writes only under its own `<consumer>/` prefix; never overwrite or delete another consumer's prefix.\n2. Deletes go to the trash by default; `permanently=true` requires an explicit user decision.\n3. The OAuth token and the rate limit are shared: a 429 is global, so serialize bulk transfers and back off before retrying.\n4. Consumer-to-prefix pins (commit SHA, last `-Live`) are tracked in `CONSUMERS.md`."
+        }
+      ],
+      "agents_note": "- Consumer pins: `CONSUMERS.md` (consumer, prefix, pinned SHA, last `-Live`).\n- Storage layout: `CONTRACT.md` → Storage layout and multi-consumer rules.",
+      "skill_note": "- `.kilo/skills/yandex-disk/references/transfer.md` — upload/download href flow, 409/202/429 handling, path normalization.",
+      "required_files": [
+        "CONSUMERS.md",
+        "scripts/disk.ps1",
+        ".kilo/skills/yandex-disk/references/transfer.md"
+      ],
       "smoke": "$token = Get-HubEnv 'YANDEX_DISK_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'OAuth ' + $token; Accept = 'application/json' }\n$d = Invoke-RestMethod -Uri 'https://cloud-api.yandex.net/v1/disk/' -Headers $h -TimeoutSec 20\n'disk total ' + $d.total_space + ' used ' + $d.used_space",
       "evals": [
         "verify.ps1 -Offline exits 0 and prints READY: blocked (missing: YANDEX_DISK_TOKEN)",
         "verify.ps1 -Live without env exits 2 without a network call",
-        "with a token, -Live prints total and used space"
+        "with a token, -Live prints EVIDENCE: with total and used space",
+        "harness selfcheck and harness lint pass"
+      ],
+      "eval_rows": [
+        {
+          "task": "`-Offline` without a token exits 0 and prints `READY: blocked (missing: YANDEX_DISK_TOKEN)`",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Offline`",
+          "expected": "exit 0 and `READY: blocked`"
+        },
+        {
+          "task": "`-Live` without env exits 2 without a network call",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live`",
+          "expected": "exit 2 and `STATUS: BLOCKED`"
+        },
+        {
+          "task": "`-Live -EnvSource Process` without a process token exits 2",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live -EnvSource Process`",
+          "expected": "exit 2 and `STATUS: BLOCKED`"
+        },
+        {
+          "task": "with a token, `-Live` prints `EVIDENCE:` with total and used space",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live`",
+          "expected": "exit 0 and `STATUS: OK (live)`"
+        },
+        {
+          "task": "harness invariants hold: autoload, frontmatter, matrix, secrets, encoding, contract/README/registry sync",
+          "grader": "`pwsh -NoProfile -File scripts/selfcheck.ps1`",
+          "expected": "exit 0 and `SELFCHECK: OK (`"
+        },
+        {
+          "task": "a token-shaped fixture in a tracked doc fails selfcheck (negative test)",
+          "grader": "- (not runnable: add a fixture in a temp checkout)",
+          "expected": "n/a"
+        },
+        {
+          "task": "no harness drift",
+          "grader": "`python -X utf8 C:\\Work\\Python\\harness-playbook\\scripts\\harness_lint.py --repo integration-yandex-disk`",
+          "expected": "exit 0 and `total findings: 0`"
+        },
+        {
+          "task": "a write without `-ConfirmWrite` is refused before any network call",
+          "grader": "`pwsh -NoProfile -File scripts/disk.ps1 -Remove /probe/x`",
+          "expected": "exit 3 and `STATUS: REFUSED`"
+        }
       ]
     },
     {

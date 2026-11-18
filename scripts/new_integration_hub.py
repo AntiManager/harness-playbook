@@ -153,11 +153,12 @@ matrix and the verify gate. Consumers link this repo and pin a commit; they neve
 | selfcheck | `pwsh -NoProfile -File scripts/selfcheck.ps1` | `SELFCHECK: OK` |
 | live smoke | `pwsh -NoProfile -File scripts/verify.ps1 -Live` | `STATUS: OK (live)` and one evidence line |
 | repo check | `pwsh -NoProfile -File $env:USERPROFILE\\.config\\kilo\\scripts\\verify_repo.ps1 -Repo .` | `STATUS: OK` |
-| harness lint | `python -X utf8 C:\\Work\\Python\\harness-playbook\\scripts\\harness_lint.py --repo {dir}` | `0 findings` |
+| harness lint | `python -X utf8 C:\\Work\\Python\\harness-playbook\\scripts\\harness_lint.py --repo {dir}` | `total findings: 0` |
 
 ## Rules that always hold
 
 - No secrets in the repo: environment variable names only (`CONTRACT.md` lists them).
+- No MCP server for this hub: call the service over REST from scripts; the token stays in env.
 - No write operation without an explicit user decision and a confirmation argument.
 - Every new failure gets a `FAILURES.md` row in the same change as the fix.
 - Contract changes bump `Version` and are announced to consumers by commit message prefix `contract:`.
@@ -171,6 +172,7 @@ matrix and the verify gate. Consumers link this repo and pin a commit; they neve
 - Procedure for an agent: `.kilo/skills/{slug}/SKILL.md`
 - State and next step: `.memory/active_context.md`
 - Provenance and exceptions: `.kilo/harness.md`
+{agents_note}
 """
 
 SKILL = """---
@@ -210,7 +212,7 @@ description: Use when a task touches {service} through this hub — lists the co
 
 - `C:\\Work\\Python\\{dir}\\CONTRACT.md`
 - `C:\\Work\\Python\\{dir}\\FAILURES.md`
-- `C:\\Work\\Python\\harness-playbook\\inventory\\integrations.json`
+{skill_note}
 """
 
 HARNESS = """# Harness provenance — {dir}
@@ -328,7 +330,7 @@ if ($Offline -and $Live) {
     exit 1
 }
 $root = Split-Path -Parent $PSScriptRoot
-$required = @('README.md', 'CONTRACT.md', 'FAILURES.md', 'AGENTS.md', 'kilo.json', 'state.json', '.kilo\\skills\\{slug}\\SKILL.md', '.kilo\\harness.md', '.memory\\project_brief.md', '.memory\\active_context.md', '.memory\\progress.md', 'evals\\tasks.md')
+$required = @('README.md', 'CONTRACT.md', 'FAILURES.md', 'AGENTS.md', 'kilo.json', 'state.json', '.kilo/skills/{slug}/SKILL.md', '.kilo/harness.md', '.memory/project_brief.md', '.memory/active_context.md', '.memory/progress.md', 'evals/tasks.md'{required_files})
 $missing = @()
 foreach ($f in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $f))) { $missing += $f }
@@ -684,7 +686,7 @@ if (-not (Test-Path -LiteralPath $readmePath)) {
 $checks++
 $registryPath = $env:HARNESS_REGISTRY
 if (-not $registryPath) {
-    $registryPath = Join-Path (Split-Path -Parent $root) 'harness-playbook\\inventory\\integrations.json'
+    $registryPath = Join-Path (Split-Path -Parent $root) 'harness-playbook/inventory/integrations.json'
 }
 if (-not (Test-Path -LiteralPath $registryPath)) {
     if ($RequireRegistry) {
@@ -775,11 +777,14 @@ def render_verify(hub):
         smoke_block = "    throw 'no live smoke defined for this hub'"
     hosts = hub.get("host_block", "")
     host_block = hosts + "\n" if hosts else ""
+    extra_required = "".join(
+        ", '" + name.replace("'", "''") + "'" for name in hub.get("required_files", []))
     return (VERIFY
             .replace("{slug}", hub["slug"])
             .replace("{dir}", hub["dir"])
             .replace("{status}", hub["status"])
             .replace("{env_array}", env_array)
+            .replace("{required_files}", extra_required)
             .replace("{host_block}\n", host_block)
             .replace("{smoke}", smoke_block))
 
@@ -849,12 +854,14 @@ def render(hub):
             title=hub["title"], rows=fail_rows, unknown=unknown),
         "AGENTS.md": AGENTS.format(
             title=hub["title"], service=hub["service"], status=hub["status"],
-            mode=hub["mode"], dir=hub["dir"], slug=hub["slug"]),
+            mode=hub["mode"], dir=hub["dir"], slug=hub["slug"],
+            agents_note=hub.get("agents_note", "")),
         "kilo.json": KILO_JSON,
         ".gitignore": GITIGNORE,
         os.path.join(".kilo", "skills", hub["slug"], "SKILL.md"): SKILL.format(
             slug=hub["slug"], title=hub["title"], service=hub["service"],
-            dir=hub["dir"], status=hub["status"]),
+            dir=hub["dir"], status=hub["status"],
+            skill_note=hub.get("skill_note", "")),
         os.path.join(".kilo", "harness.md"): HARNESS.format(
             dir=hub["dir"], key=hub["key"], slug=hub["slug"],
             initialized=hub.get("initialized", DATE)),
