@@ -893,7 +893,7 @@
       "service": "Yandex Disk REST API v1",
       "status": "partial",
       "mode": "read + write (gated)",
-      "contract_version": 2,
+      "contract_version": 4,
       "token_expires_on": "2027-11-18",
       "summary": "File storage over the Disk REST API: metadata, listing, upload and download by temporary href, copy, move, delete, publish and trash. App-folder access is the default least-privilege mode.",
       "consumers": [
@@ -902,9 +902,10 @@
         "factory-system: generated reports (planned)"
       ],
       "auth": [
-        "YANDEX_DISK_TOKEN"
+        "YANDEX_DISK_TOKEN",
+        "YANDEX_DISK_AUDIT_TOKEN"
       ],
-      "auth_notes": "OAuth app at oauth.yandex.ru. Scopes: cloud_api:disk.read, cloud_api:disk.write, cloud_api:disk.info and cloud_api:disk.app_folder. Prefer the app-folder scope: the token is then limited to the dedicated app folder (disk:/Приложения/<app> in the Russian UI) and cannot read the rest of the disk. Header: Authorization: OAuth <token>; Accept and Content-Type must be application/json.",
+      "auth_notes": "OAuth app at oauth.yandex.ru. Header: Authorization: OAuth <token>; Accept: application/json. Two apps, two tokens, two jobs. (1) YANDEX_DISK_TOKEN — app `integration-yandex-disk`, scopes cloud_api:disk.app_folder + cloud_api:disk.info, least privilege, used by consumers under disk:/Приложения/integration-yandex-disk. (2) YANDEX_DISK_AUDIT_TOKEN — app `integration-yandex-disk-audit`, scopes cloud_api:disk.read + cloud_api:disk.write + cloud_api:disk.info, full-disk read/write, used only for inventory, reporting and trash maintenance. Never give the audit token to a consumer.",
       "endpoints": [
         "GET https://cloud-api.yandex.net/v1/disk/ (disk metadata)",
         "GET /v1/disk/resources?path= (metadata and listing)",
@@ -922,7 +923,9 @@
         "Long operations return 202 with a link to the operation status",
         "The app-folder scope changes the root: only the app folder is visible",
         "Under the app-folder scope the root is /Приложения/<app name>; a request for / is forbidden",
-        "Uploading into a folder that does not exist returns 409; the API does not create intermediate folders"
+        "Uploading into a folder that does not exist returns 409; the API does not create intermediate folders",
+        "A 30 MB file uploaded over one presigned href in about 2 s; no chunked or multipart API is needed at that size",
+        "A full-disk walk of 9 101 files in 1 032 folders cost 1 033 requests and finished in about a minute; the API did not rate-limit (one transient socket error was retried)"
       ],
       "gotchas": [
         "A write to an existing path returns 409 unless overwrite=true",
@@ -931,7 +934,9 @@
         "Under cloud_api:disk.app_folder the app folder is /Приложения/<app name> and / returns 403; build paths under it",
         "Public links are separate from file access and can be revoked",
         "Deleting without permanently=true leaves the node in the trash",
-        "A missing parent folder and an existing target both return 409 from resources/upload; create the folders first"
+        "A missing parent folder and an existing target both return 409 from resources/upload; create the folders first",
+        "resources/upload needs the full path including /Приложения/<app>; a path relative to the app folder is outside the token root and returns 403",
+        "Trash listing is scope-dependent: with YANDEX_DISK_TOKEN GET /v1/disk/trash/resources returns 403, with YANDEX_DISK_AUDIT_TOKEN it returns the items (36 on 2026-11-18)"
       ],
       "failures": [
         [
@@ -974,13 +979,31 @@
           "202 with no file yet",
           "asynchronous operation",
           "poll the operation href until it reports success",
-          "-"
+          "2026-11-18: DELETE of a folder with 60 files -> 202, operation in-progress -> success in ~18 s; scripts/disk.ps1 -Remove polls and prints async=true"
         ],
         [
           "STATUS: FAIL (cannot convert \"System.String\" to SwitchParameter)",
           "client bug: a local $overwrite variable collided with the [switch]$Overwrite parameter (names are case-insensitive)",
           "rename the local variable; selfcheck.ps1 fails on this class of bug",
           "2026-11-18: first live upload attempt produced this message instead of the real 409"
+        ],
+        [
+          "403 on /v1/disk/trash/resources",
+          "the app-folder token cannot reach the trash; the full-disk audit token can",
+          "use YANDEX_DISK_AUDIT_TOKEN (app `integration-yandex-disk-audit`) for trash work",
+          "2026-11-18: app-folder token -> 403; audit token -> 36 items"
+        ],
+        [
+          "Socket error / request failed mid-scan",
+          "transient network failure on a long inventory walk",
+          "retry with backoff; scripts/inventory.ps1 retries code 0, 429 and 5xx up to 6 times",
+          "2026-11-18: one transient socket error during the 1 033-request walk"
+        ],
+        [
+          "403 on resources/upload for an existing folder",
+          "the path was built relative to the app folder instead of the full path /Приложения/<app>",
+          "pass the full path; scripts/disk.ps1 prefixes /Приложения/integration-yandex-disk automatically",
+          "2026-11-18: -Upload with /hub-smoke/... -> 403; the same call with the full path -> 200"
         ]
       ],
       "refs": [
@@ -991,14 +1014,19 @@
         {
           "title": "Storage layout and multi-consumer rules",
           "body": "All consumers share one app folder. Layout: `disk:/Приложения/<app>/<consumer>/<YYYY>/<file>`.\n\nThe `hub-smoke/` prefix is reserved for the hub's own live smoke tests and is emptied after each run.\n\n1. Each consumer writes only under its own `<consumer>/` prefix; never overwrite or delete another consumer's prefix.\n2. Deletes go to the trash by default; `permanently=true` requires an explicit user decision.\n3. The OAuth token and the rate limit are shared: a 429 is global, so serialize bulk transfers and back off before retrying.\n4. Consumer-to-prefix pins (commit SHA, last `-Live`) are tracked in `CONSUMERS.md`."
+        },
+        {
+          "title": "Token scopes",
+          "body": "| Token | OAuth app | Scopes | Visible root | Use |\n|---|---|---|---|---|\n| YANDEX_DISK_TOKEN | integration-yandex-disk | disk.app_folder, disk.info | /Приложения/integration-yandex-disk | consumers, hub smoke, writes |\n| YANDEX_DISK_AUDIT_TOKEN | integration-yandex-disk-audit | disk.read, disk.write, disk.info | / (whole disk) | inventory, reports, trash purge |\n\nBoth tokens are 1-year tokens stored in the User environment only; never in a repository. `scripts/inventory.ps1` prefers the audit token and falls back to the app-folder one. Changing the scopes of an existing OAuth app invalidates its issued tokens, which is why the audit access lives in a separate app."
         }
       ],
-      "agents_note": "- Consumer pins: `CONSUMERS.md` (consumer, prefix, pinned SHA, last `-Live`).\n- Storage layout: `CONTRACT.md` → Storage layout and multi-consumer rules.",
-      "skill_note": "- `.kilo/skills/yandex-disk/references/transfer.md` — upload/download href flow, 409/202/429 handling, path normalization.",
+      "agents_note": "- Client scripts: `scripts/disk.ps1` (read + gated write), `scripts/inventory.ps1` (audit token).\n- Consumer pins: `CONSUMERS.md` (consumer, prefix, pinned SHA, last `-Live`).\n- Storage layout: `CONTRACT.md` → Storage layout and multi-consumer rules.",
+      "skill_note": "- `.kilo/skills/yandex-disk/references/transfer.md` — upload/download href flow, 409/202/429 handling, path normalization.\n- `scripts/inventory.ps1` — read-only full-disk inventory to CSV + markdown (needs the audit token).",
       "required_files": [
+        ".kilo/skills/yandex-disk/references/transfer.md",
         "CONSUMERS.md",
         "scripts/disk.ps1",
-        ".kilo/skills/yandex-disk/references/transfer.md"
+        "scripts/inventory.ps1"
       ],
       "smoke": "$token = Get-HubEnv 'YANDEX_DISK_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'OAuth ' + $token; Accept = 'application/json' }\n$d = Invoke-RestMethod -Uri 'https://cloud-api.yandex.net/v1/disk/' -Headers $h -TimeoutSec 20\n'disk total ' + $d.total_space + ' used ' + $d.used_space",
       "evals": [
