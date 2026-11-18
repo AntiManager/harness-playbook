@@ -1126,21 +1126,20 @@
       "slug": "google",
       "title": "Google APIs (OAuth 2.0)",
       "service": "Google OAuth 2.0 with Search Console, Drive, Sheets and Cloud Translation",
-      "status": "partial",
-      "mode": "read (+ OIDC sign-in later)",
-      "summary": "One OAuth 2.0 credential model for Google APIs. Primary scope is Google Search Console (sites, search analytics, sitemaps); Drive and Sheets are read-only options; Cloud Translation absorbs the former google-translate deferred entry. Gmail and restricted Drive scopes are out of scope until Google verification and a CASA assessment exist.",
+      "status": "live",
+      "mode": "read (Search Console via a service account; Drive/Sheets read-only on demand; OIDC sign-in later)",
+      "contract_version": 2,
+      "summary": "One credential model for Google APIs, anchored on a service account (GOOGLE_APPLICATION_CREDENTIALS) so no 7-day Testing-mode expiry and no app verification are needed. Primary scope is Google Search Console (sites, search analytics, sitemaps); Drive and Sheets are read-only options; Cloud Translation absorbs the former google-translate deferred entry. Gmail and restricted Drive scopes are out of scope until Google verification and a CASA assessment exist.",
       "consumers": [
-        "AntiManager: Search Console API and SEO reporting (planned)",
-        "exhomebird and linear-tech: Search Console API (planned)",
+        "AntiManager: Search Console API and SEO reporting (antimanager.pro verified 2026-11-18)",
+        "exhomebird and linear-tech: Search Console API (exhomebird.ru verified 2026-11-18; linear-tech pending)",
         "Excell_Translator: Cloud Translation v2 (planned migration)",
         "Proc_library: Google sign-in via OIDC (later)"
       ],
       "auth": [
-        "GOOGLE_OAUTH_CLIENT_ID",
-        "GOOGLE_OAUTH_CLIENT_SECRET",
-        "GOOGLE_OAUTH_REFRESH_TOKEN"
+        "GOOGLE_APPLICATION_CREDENTIALS"
       ],
-      "auth_notes": "Google Cloud project, enable only the APIs in use, OAuth consent screen, installed-app flow with a loopback redirect on http://127.0.0.1:<port>. Store the refresh token in User env or _private, never in a repo. Optional GOOGLE_APPLICATION_CREDENTIALS for a service account and GOOGLE_PROJECT_ID for quota attribution. The oob redirect is removed; do not use it.",
+      "auth_notes": "Primary: a service-account JSON key whose path is in GOOGLE_APPLICATION_CREDENTIALS, stored outside the repo with a restricted ACL; add the service-account email as a user of every Search Console property (Restricted access is enough for reads). No refresh token, no 7-day expiry, no app verification. Fallback for interactive consent: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN from an installed-app loopback flow on http://127.0.0.1:<port>; a Testing consent screen expires that token in 7 days. Optional GOOGLE_PROJECT_ID for quota attribution. The oob redirect is removed; do not use it.",
       "endpoints": [
         "POST https://oauth2.googleapis.com/token (code and refresh exchange)",
         "POST https://oauth2.googleapis.com/revoke",
@@ -1166,9 +1165,11 @@
         "The oob redirect was removed; use a loopback redirect",
         "A service account must be added as a user in Search Console before it can read a property",
         "The Testing-mode 7-day expiry also breaks long-running scheduled jobs",
-        "A service account avoids the 7-day expiry and app verification, but its JSON key is a long-lived secret: keep it in GOOGLE_APPLICATION_CREDENTIALS outside the repo and add its email as a user of every Search Console property",
-        "After rotating the refresh token, update state.json token_expires_on (Testing = issue date + 7 days); otherwise EXPIRES and the selfcheck expiry gate are stale",
-        "Requests may need the local proxy; a timeout is not an auth error"
+        "A service account avoids the 7-day expiry and app verification, but its JSON key is a long-lived secret: keep it in GOOGLE_APPLICATION_CREDENTIALS outside the repo (ACL-restricted, never copied into a repo) and add its email as a user of every Search Console property; a leaked key is revoked in IAM & Admin > Service accounts > Keys",
+        "Search Console HTML-tag verification is lost when a site rebuild drops the meta tag, so the verification code must live in the site build input (AntiManager reads GOOGLE_VERIFICATION from .env) and be re-checked after every deploy of that site",
+        "token_expires_on in state.json tracks only the user-OAuth fallback (Testing = issue date + 7 days); with a service account as the auth path drop the field, because an expired value fails selfcheck; after rotating a refresh token update it in the same change",
+        "Requests may need the local proxy; a timeout is not an auth error",
+        "Through the local proxy the TLS connection to oauth2.googleapis.com or www.googleapis.com is reset intermittently (observed 2 of 4 attempts), so the live smoke retries three times with backoff before failing"
       ],
       "failures": [
         [
@@ -1182,6 +1183,18 @@
           "scope missing or the account is not a property user",
           "add the scope and the account to the Search Console property",
           "-"
+        ],
+        [
+          "sites list is empty or 403 PERMISSION_DENIED for the service account",
+          "the service-account email is not a user of that Search Console property",
+          "add the service-account email under Settings > Users and permissions (Restricted access), then re-run -Live",
+          "2026-11-18: service account added as Restricted user, sites: 1"
+        ],
+        [
+          "property shows as unverified after a site deploy",
+          "the site build no longer emitted the verification meta tag because the build input lost the code",
+          "keep the verification code in the site .env and re-check the tag after every deploy of that site",
+          "2026-11-18: AntiManager build reads GOOGLE_VERIFICATION from .env"
         ],
         [
           "403 quotaExceeded",
@@ -1219,11 +1232,12 @@
         "https://developers.google.com/identity/protocols/oauth2/native-app (loopback flow)",
         "https://developers.google.com/webmaster-tools/v1/searchanalytics/query (query contract)"
       ],
-      "smoke": "$id = Get-HubEnv 'GOOGLE_OAUTH_CLIENT_ID'\n$secret = Get-HubEnv 'GOOGLE_OAUTH_CLIENT_SECRET'\n$refresh = Get-HubEnv 'GOOGLE_OAUTH_REFRESH_TOKEN'\nif (-not $id -or -not $secret -or -not $refresh) { throw 'no credentials' }\n$body = @{ client_id = $id; client_secret = $secret; refresh_token = $refresh; grant_type = 'refresh_token' }\n$t = Invoke-RestMethod -Uri 'https://oauth2.googleapis.com/token' -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $body -TimeoutSec 30\n$h = @{ Authorization = 'Bearer ' + $t.access_token }\n$s = Invoke-RestMethod -Uri 'https://www.googleapis.com/webmasters/v3/sites' -Headers $h -TimeoutSec 30\n'sites: ' + $s.siteEntry.Count",
+      "smoke": "$keyPath = Get-HubEnv 'GOOGLE_APPLICATION_CREDENTIALS'\nif (-not $keyPath) { throw 'GOOGLE_APPLICATION_CREDENTIALS is not set' }\nif (-not (Test-Path -LiteralPath $keyPath)) { throw ('service-account key not found: ' + $keyPath) }\n$sa = Get-Content -LiteralPath $keyPath -Raw | ConvertFrom-Json\nfunction To-B64Url([byte[]]$bytes) { [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_') }\nfunction Invoke-GoogleApi([scriptblock]$call) { $last = $null; foreach ($attempt in 1..3) { try { return (& $call) } catch { $last = $_; Start-Sleep -Seconds (2 * $attempt) } }; throw $last }\n$now = [int][double]::Parse((Get-Date -Date (Get-Date).ToUniversalTime() -UFormat %s))\n$jwtHeader = @{ alg = 'RS256'; typ = 'JWT' } | ConvertTo-Json -Compress\n$jwtClaims = @{ iss = $sa.client_email; scope = 'https://www.googleapis.com/auth/webmasters.readonly'; aud = 'https://oauth2.googleapis.com/token'; exp = $now + 3600; iat = $now } | ConvertTo-Json -Compress\n$unsigned = (To-B64Url ([Text.Encoding]::UTF8.GetBytes($jwtHeader))) + '.' + (To-B64Url ([Text.Encoding]::UTF8.GetBytes($jwtClaims)))\n$rsa = [System.Security.Cryptography.RSA]::Create()\ntry { $rsa.ImportFromPem($sa.private_key); $sig = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($unsigned), [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1) } finally { $rsa.Dispose() }\n$assertion = $unsigned + '.' + (To-B64Url $sig)\n$body = @{ grant_type = 'urn:ietf:params:oauth:grant-type:jwt-bearer'; assertion = $assertion }\n$tok = Invoke-GoogleApi { Invoke-RestMethod -Uri 'https://oauth2.googleapis.com/token' -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $body -TimeoutSec 30 }\n$h = @{ Authorization = 'Bearer ' + $tok.access_token }\n$sites = Invoke-GoogleApi { Invoke-RestMethod -Uri 'https://www.googleapis.com/webmasters/v3/sites' -Headers $h -TimeoutSec 30 }\n$count = 0\nif ($null -ne $sites.siteEntry) { $count = @($sites.siteEntry).Count }\n'sites: ' + $count",
       "evals": [
-        "verify.ps1 -Offline exits 0 and prints READY: blocked (missing: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_OAUTH_REFRESH_TOKEN)",
+        "verify.ps1 -Offline exits 0 and prints READY: blocked (missing: GOOGLE_APPLICATION_CREDENTIALS)",
         "verify.ps1 -Live without env exits 2 without a network call",
-        "with credentials, -Live exchanges the refresh token and prints the Search Console site count"
+        "verify.ps1 -Live with a service-account key fails with a clear message when the key path does not exist",
+        "with a service-account key, -Live signs a JWT, exchanges it and prints the Search Console site count"
       ]
     }
   ],
