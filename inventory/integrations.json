@@ -891,9 +891,10 @@
       "slug": "yandex-disk",
       "title": "Yandex Disk",
       "service": "Yandex Disk REST API v1",
-      "status": "blocked",
+      "status": "partial",
       "mode": "read + write (gated)",
       "contract_version": 2,
+      "token_expires_on": "2027-11-18",
       "summary": "File storage over the Disk REST API: metadata, listing, upload and download by temporary href, copy, move, delete, publish and trash. App-folder access is the default least-privilege mode.",
       "consumers": [
         "exhomebird: media archive (planned)",
@@ -919,14 +920,18 @@
         "API requests are rate-limited; HTTP 429 on exceed",
         "Upload and download links are temporary; request a fresh href per transfer",
         "Long operations return 202 with a link to the operation status",
-        "The app-folder scope changes the root: only the app folder is visible"
+        "The app-folder scope changes the root: only the app folder is visible",
+        "Under the app-folder scope the root is /Приложения/<app name>; a request for / is forbidden",
+        "Uploading into a folder that does not exist returns 409; the API does not create intermediate folders"
       ],
       "gotchas": [
         "A write to an existing path returns 409 unless overwrite=true",
         "Paths are disk:/foo and /foo; both mean the same node",
         "An app-folder token cannot list the rest of the disk, which is expected",
+        "Under cloud_api:disk.app_folder the app folder is /Приложения/<app name> and / returns 403; build paths under it",
         "Public links are separate from file access and can be revoked",
-        "Deleting without permanently=true leaves the node in the trash"
+        "Deleting without permanently=true leaves the node in the trash",
+        "A missing parent folder and an existing target both return 409 from resources/upload; create the folders first"
       ],
       "failures": [
         [
@@ -948,16 +953,34 @@
           "-"
         ],
         [
+          "409 on resources/upload",
+          "the parent folder does not exist; Disk does not create intermediate folders",
+          "create the folder chain first; scripts/disk.ps1 -Upload does it",
+          "2026-11-18: nested path under a missing folder -> 409, root-level file -> href returned"
+        ],
+        [
           "429 Too Many Requests",
           "the request rate limit is exceeded (shared by every consumer)",
           "back off 2s, 4s, 8s and serialize bulk transfers; do not retry immediately",
           "-"
         ],
         [
+          "403 Forbidden",
+          "path outside the app folder under cloud_api:disk.app_folder, e.g. / or another app's folder",
+          "use the app folder root /Приложения/<app name> and build paths under it",
+          "2026-11-18: -List / -> 403, -List /Приложения/integration-yandex-disk -> items=0"
+        ],
+        [
           "202 with no file yet",
           "asynchronous operation",
           "poll the operation href until it reports success",
           "-"
+        ],
+        [
+          "STATUS: FAIL (cannot convert \"System.String\" to SwitchParameter)",
+          "client bug: a local $overwrite variable collided with the [switch]$Overwrite parameter (names are case-insensitive)",
+          "rename the local variable; selfcheck.ps1 fails on this class of bug",
+          "2026-11-18: first live upload attempt produced this message instead of the real 409"
         ]
       ],
       "refs": [
@@ -967,7 +990,7 @@
       "extra_sections": [
         {
           "title": "Storage layout and multi-consumer rules",
-          "body": "All consumers share one app folder. Layout: `disk:/Приложения/<app>/<consumer>/<YYYY>/<file>`.\n\n1. Each consumer writes only under its own `<consumer>/` prefix; never overwrite or delete another consumer's prefix.\n2. Deletes go to the trash by default; `permanently=true` requires an explicit user decision.\n3. The OAuth token and the rate limit are shared: a 429 is global, so serialize bulk transfers and back off before retrying.\n4. Consumer-to-prefix pins (commit SHA, last `-Live`) are tracked in `CONSUMERS.md`."
+          "body": "All consumers share one app folder. Layout: `disk:/Приложения/<app>/<consumer>/<YYYY>/<file>`.\n\nThe `hub-smoke/` prefix is reserved for the hub's own live smoke tests and is emptied after each run.\n\n1. Each consumer writes only under its own `<consumer>/` prefix; never overwrite or delete another consumer's prefix.\n2. Deletes go to the trash by default; `permanently=true` requires an explicit user decision.\n3. The OAuth token and the rate limit are shared: a 429 is global, so serialize bulk transfers and back off before retrying.\n4. Consumer-to-prefix pins (commit SHA, last `-Live`) are tracked in `CONSUMERS.md`."
         }
       ],
       "agents_note": "- Consumer pins: `CONSUMERS.md` (consumer, prefix, pinned SHA, last `-Live`).\n- Storage layout: `CONTRACT.md` → Storage layout and multi-consumer rules.",
@@ -979,24 +1002,19 @@
       ],
       "smoke": "$token = Get-HubEnv 'YANDEX_DISK_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'OAuth ' + $token; Accept = 'application/json' }\n$d = Invoke-RestMethod -Uri 'https://cloud-api.yandex.net/v1/disk/' -Headers $h -TimeoutSec 20\n'disk total ' + $d.total_space + ' used ' + $d.used_space",
       "evals": [
-        "verify.ps1 -Offline exits 0 and prints READY: blocked (missing: YANDEX_DISK_TOKEN)",
-        "verify.ps1 -Live without env exits 2 without a network call",
+        "verify.ps1 -Offline -EnvSource Process without a token exits 0 and prints READY: blocked (missing: YANDEX_DISK_TOKEN)",
+        "verify.ps1 -Live -EnvSource Process without env exits 2 without a network call",
         "with a token, -Live prints EVIDENCE: with total and used space",
         "harness selfcheck and harness lint pass"
       ],
       "eval_rows": [
         {
-          "task": "`-Offline` without a token exits 0 and prints `READY: blocked (missing: YANDEX_DISK_TOKEN)`",
-          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Offline`",
+          "task": "`-Offline -EnvSource Process` without a process token exits 0 and prints `READY: blocked (missing: YANDEX_DISK_TOKEN)`",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Offline -EnvSource Process`",
           "expected": "exit 0 and `READY: blocked`"
         },
         {
-          "task": "`-Live` without env exits 2 without a network call",
-          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live`",
-          "expected": "exit 2 and `STATUS: BLOCKED`"
-        },
-        {
-          "task": "`-Live -EnvSource Process` without a process token exits 2",
+          "task": "`-Live -EnvSource Process` without a process token exits 2 without a network call",
           "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live -EnvSource Process`",
           "expected": "exit 2 and `STATUS: BLOCKED`"
         },

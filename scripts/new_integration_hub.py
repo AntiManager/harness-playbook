@@ -731,6 +731,19 @@ if ($state -and $state.token_expires_on) {
     }
 }
 
+# 11. a client script must not assign a variable that shadows a [switch] parameter (names are case-insensitive)
+$checks++
+$clientPath = Join-Path $root 'scripts/disk.ps1'
+if (Test-Path -LiteralPath $clientPath) {
+    $clientText = Get-Content -LiteralPath $clientPath -Raw
+    $switchNames = @([regex]::Matches($clientText, '(?im)\\[switch\\]\\$(\\w+)') | ForEach-Object { $_.Groups[1].Value })
+    foreach ($name in $switchNames) {
+        if ($clientText -match ('(?im)(^|;)\\s*\\$' + [regex]::Escape($name) + '\\s*=')) {
+            Add-Fail ('scripts/disk.ps1 assigns $' + $name + ', which shadows the [switch] parameter; use another name')
+        }
+    }
+}
+
 if ($warn.Count -gt 0) {
     $warn | ForEach-Object { Write-Output ('SELFCHECK: WARN ' + $_) }
 }
