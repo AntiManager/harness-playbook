@@ -96,7 +96,7 @@ Version: {version} · {date} · status: **{status}** · mode: {mode}
 
 {gotchas}
 
-{extra}## Consumers and evidence
+{sources}{extra}## Consumers and evidence
 
 {consumers}
 
@@ -158,7 +158,7 @@ matrix and the verify gate. Consumers link this repo and pin a commit; they neve
 ## Rules that always hold
 
 - No secrets in the repo: environment variable names only (`CONTRACT.md` lists them).
-- No MCP server for this hub: call the service over REST from scripts; the token stays in env.
+- No MCP server for this hub: drive the service from scripts; credentials stay in env.
 - No write operation without an explicit user decision and a confirmation argument.
 - Every new failure gets a `FAILURES.md` row in the same change as the fix.
 - Contract changes bump `Version` and are announced to consumers by commit message prefix `contract:`.
@@ -238,6 +238,8 @@ HARNESS = """# Harness provenance — {dir}
   comes from `HARNESS_REGISTRY` or the sibling `harness-playbook` checkout; when it is absent the
   sync check is a WARN, and `-RequireRegistry` turns that into a failure.
 - CI: `.github/workflows/gate.yml` runs `-Offline` and `selfcheck.ps1` on every push (no secrets).
+- Drift: `python -X utf8 C:\\Work\\Python\\harness-playbook\\scripts\\new_integration_hub.py --only {key} --check`
+  prints `0 drift`; any other line means a generated file was hand-edited or is stale.
 - Not covered: service availability and credentials — `READY:` only shows env presence; use
   `-Live` to prove access
 - Full gate: `verify.ps1 -Live` plus the consumer project's own tests
@@ -366,6 +368,10 @@ if ($hubState.token_expires_on) {
     $expires = $hubState.token_expires_on
     if ($expires -is [datetime]) { $expires = $expires.ToString('yyyy-MM-dd') }
     Write-Output ("EXPIRES: " + $expires)
+}
+if ($hubState.status -eq 'live' -and $missingEnv.Count -gt 0) {
+    Write-Output ("STATUS: FAIL (state.json says live but env is missing: " + ($missingEnv -join ', ') + ")")
+    exit 1
 }
 {host_block}
 if ($missingEnv.Count -gt 0) {
@@ -593,7 +599,12 @@ $patterns = @(
     'OAuth\\s+[A-Za-z0-9._-]{20,}',
     'y0_[A-Za-z0-9_-]{20,}',
     'YC_API_KEY\\s*=\\s*\\S+',
-    'client_secret\\s*[:=]\\s*\\S{8,}',
+    'AIza[0-9A-Za-z_-]{35}',
+    'GOCSPX-[0-9A-Za-z_-]{20,}',
+    'ya29\\.[0-9A-Za-z._-]{20,}',
+    '1//[0-9A-Za-z_-]{20,}',
+    'private_key\\s*[:=]\\s*["'']?[-A-Za-z0-9+/]{20,}',
+    'client_secret\\s*[:=]\\s*["'']?[A-Za-z0-9._-]{8,}',
     'https?://\\S*(token|secret|password|api_key)='
 )
 $textFiles = @()
@@ -731,15 +742,15 @@ if ($state -and $state.token_expires_on) {
     }
 }
 
-# 11. a client script must not assign a variable that shadows a [switch] parameter (names are case-insensitive)
+# 11. no script in scripts/ may assign a variable that shadows its own [switch] parameter (names are case-insensitive)
 $checks++
-$clientPath = Join-Path $root 'scripts/disk.ps1'
-if (Test-Path -LiteralPath $clientPath) {
-    $clientText = Get-Content -LiteralPath $clientPath -Raw
-    $switchNames = @([regex]::Matches($clientText, '(?im)\\[switch\\]\\$(\\w+)') | ForEach-Object { $_.Groups[1].Value })
+$scriptFiles = @(Get-ChildItem -LiteralPath (Join-Path $root 'scripts') -Filter *.ps1 -File -ErrorAction SilentlyContinue)
+foreach ($scriptFile in $scriptFiles) {
+    $scriptText = Get-Content -LiteralPath $scriptFile.FullName -Raw
+    $switchNames = @([regex]::Matches($scriptText, '(?im)\\[switch\\]\\$(\\w+)') | ForEach-Object { $_.Groups[1].Value })
     foreach ($name in $switchNames) {
-        if ($clientText -match ('(?im)(^|;)\\s*\\$' + [regex]::Escape($name) + '\\s*=')) {
-            Add-Fail ('scripts/disk.ps1 assigns $' + $name + ', which shadows the [switch] parameter; use another name')
+        if ($scriptText -match ('(?im)(^|;)\\s*\\$' + [regex]::Escape($name) + '\\s*=')) {
+            Add-Fail ('scripts/' + $scriptFile.Name + ' assigns $' + $name + ', which shadows the [switch] parameter; use another name')
         }
     }
 }
@@ -839,6 +850,8 @@ def render(hub):
     endpoints = numbered_block(hub.get("endpoints", []), "")
     limits = numbered_block(hub.get("limits", []), "")
     gotchas = numbered_block(hub.get("gotchas", []), "")
+    refs = hub.get("refs", [])
+    sources = ("## Sources\n\n" + "\n".join(f"- {ref}" for ref in refs) + "\n\n") if refs else ""
     open_items = "\n".join(
         f"- {item}" for item in hub.get("open_items", [])
     ) or "- None."
@@ -862,7 +875,7 @@ def render(hub):
             auth_notes=hub.get("auth_notes", ""),
             verify_note=hub.get("verify_note", ""),
             endpoints=endpoints, limits=limits, gotchas=gotchas, consumers=consumers,
-            extra=extra),
+            extra=extra, sources=sources),
         "FAILURES.md": FAILURES.format(
             title=hub["title"], rows=fail_rows, unknown=unknown),
         "AGENTS.md": AGENTS.format(
@@ -908,6 +921,45 @@ def write_if_missing(path, content, force):
     return True
 
 
+def merge_state(path, content):
+    """Keep machine-only state (token_expires_on) when --force rewrites state.json."""
+    if not os.path.exists(path):
+        return content
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            existing = json.load(handle)
+    except (OSError, ValueError):
+        return content
+    expiry = existing.get("token_expires_on")
+    if not expiry:
+        return content
+    data = json.loads(content)
+    if data.get("token_expires_on"):
+        return content
+    data["token_expires_on"] = expiry
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def check_hub(repo_root, files):
+    """Report files that differ from what the generator would write (read-only)."""
+    drift = []
+    for rel, content in files.items():
+        rel_key = rel.replace("\\", "/")
+        if rel_key.startswith(".memory/"):
+            continue  # hand-maintained by design
+        path = os.path.join(repo_root, rel)
+        if not os.path.exists(path):
+            drift.append(rel_key + " (missing)")
+            continue
+        if rel_key == "state.json":
+            content = merge_state(path, content)
+        with open(path, "r", encoding="utf-8", newline="") as handle:
+            current = handle.read()
+        if current.replace("\r\n", "\n") != content.replace("\r\n", "\n"):
+            drift.append(rel_key + " (differs)")
+    return drift
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=r"C:\Work\Python")
@@ -916,6 +968,8 @@ def main() -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--force-memory", action="store_true",
                         help="with --force, also rewrite .memory/ (hand-maintained state)")
+    parser.add_argument("--check", action="store_true",
+                        help="read-only: report files that differ from the generated content")
     args = parser.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -934,9 +988,20 @@ def main() -> int:
     failures = 0
     for hub in hubs:
         repo_root = os.path.join(args.root, hub["dir"])
+        files = render(hub)
+        if args.check:
+            drift = check_hub(repo_root, files)
+            print(f"{hub['dir']}: {len(drift)} drift")
+            for item in drift:
+                print("  " + item)
+            if drift:
+                failures += 1
+            continue
         created = 0
-        for rel, content in render(hub).items():
+        for rel, content in files.items():
             keep_memory = rel.replace("\\", "/").startswith(".memory/")
+            if rel.replace("\\", "/") == "state.json":
+                content = merge_state(os.path.join(repo_root, rel), content)
             force = args.force and (args.force_memory or not keep_memory)
             if write_if_missing(os.path.join(repo_root, rel), content, force):
                 created += 1
@@ -946,6 +1011,8 @@ def main() -> int:
             failures += 1
 
     print(f"\nhubs processed: {len(hubs)}")
+    if args.check:
+        return 1 if failures else 0
     print("next: git init each new repo, then run scripts/verify.ps1 -Offline per hub")
     return 1 if failures else 0
 

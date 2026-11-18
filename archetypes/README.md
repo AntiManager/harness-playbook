@@ -9,6 +9,7 @@ Start here, then open the chosen archetype. Each archetype states a **minimum se
 What is the primary deliverable?
 ├─ Content (Markdown/site posts)             → content-site
 ├─ A dataset, report or scored list          → data-etl
+├─ A contract for an external service        → integration-hub
 └─ An application
    ├─ Single user, local data, Windows EXE   → desktop-analytics
    ├─ Rebuilding an existing BI/desktop tool → desktop-migration
@@ -51,6 +52,7 @@ Counter-signals:
 | web-platform | above + HP-009 (`dev`, `status`, `logs`), HP-012, shared-DB safety note |
 | content-site | above + HP-005 (`park`), publish skill, encoding check |
 | data-etl | above + one skill per stage, `.env.example`, parity/golden check |
+| integration-hub | HP-001, 002, 003, 007, 012, 015 + `selfcheck -RequireRegistry` and a `--check` generator drift gate |
 
 ## Not now (all archetypes)
 

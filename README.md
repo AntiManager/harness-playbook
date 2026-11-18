@@ -52,6 +52,7 @@ Start with [the decision tree](archetypes/README.md); each archetype then gives 
 | [web-platform](archetypes/web-platform.md) | Supabase + Docker/VPS + Playwright | factory-system, factory-ui-template |
 | [content-site](archetypes/content-site.md) | Astro/Next/Obsidian content pipelines | exhomebird, AntiManager, linear-tech |
 | [data-etl](archetypes/data-etl.md) | Python + SQLite/Postgres + API clients | HHRU, Proc_library, Zagruzka_personala |
+| [integration-hub](archetypes/integration-hub.md) | Provider contract + gate + failure matrix, generated from the registry | integration-google, integration-yandex-mail, integration-bitrix24 |
 
 ## Templates
 
