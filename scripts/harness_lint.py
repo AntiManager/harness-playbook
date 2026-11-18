@@ -113,6 +113,8 @@ def scan(root: str):
 
         if not os.path.isfile(agents_path) and not os.path.isfile(nested_path):
             findings.append("no AGENTS.md")
+        if not os.path.isfile(os.path.join(base, ".kilo", "harness.md")):
+            findings.append("no .kilo/harness.md")
         if agents_lines > MAX_AGENTS_LINES:
             findings.append(f"AGENTS {agents_lines}L>{MAX_AGENTS_LINES}")
         if model and model not in ALLOWED_MODELS:

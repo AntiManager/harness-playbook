@@ -19,7 +19,7 @@ import json
 import os
 import sys
 
-DATE = "2026-11-17"
+DATE = "2026-11-18"
 
 README = """# Integration hub — {title}
 
@@ -66,7 +66,7 @@ README = """# Integration hub — {title}
 
 CONTRACT = """# Contract — {title}
 
-Version: 1 · {date} · status: **{status}** · mode: {mode}
+Version: {version} · {date} · status: **{status}** · mode: {mode}
 
 ## Service
 
@@ -106,7 +106,7 @@ pwsh -NoProfile -File scripts/verify.ps1 -Live      # live smoke, needs configur
 ```
 
 Exit codes: `0` ready, `2` not configured (blocked), `1` broken.
-
+{verify_note}
 ## Change policy
 
 - Read-only by default. Any write operation needs an explicit user decision and a confirmation argument in the calling code.
@@ -212,7 +212,8 @@ HARNESS = """# Harness provenance — {dir}
 
 - Archetype: `integration-hub` (custom; generated from `harness-playbook/inventory/integrations.json`)
 - Patterns: `HP-001, HP-002, HP-003, HP-007, HP-012, HP-015`
-- Initialized: {date}
+- Decisions followed: `ADR 0001, ADR 0003`
+- Initialized: {initialized}
 
 ## Verify
 
@@ -234,7 +235,7 @@ PROGRESS = """# Progress — {dir}
 ## Status
 
 - **{status}** — {mode}
-- Contract version: 1 ({date})
+- Contract version: {version} ({date})
 
 ## Done
 
@@ -310,16 +311,20 @@ if ($missing.Count -gt 0) {
     Write-Output ("STATUS: FAIL (missing: " + ($missing -join ', ') + ")")
     exit 1
 }
+function Get-HubEnv([string]$Name) {
+    $value = [Environment]::GetEnvironmentVariable($Name, 'Process')
+    if (-not $value) { $value = [Environment]::GetEnvironmentVariable($Name, 'User') }
+    return $value
+}
 $names = @({env_array})
 $state = @()
 $missingEnv = @()
 foreach ($n in $names) {
-    $value = [Environment]::GetEnvironmentVariable($n, 'Process')
-    if (-not $value) { $value = [Environment]::GetEnvironmentVariable($n, 'User') }
-    if ($value) { $state += ($n + '=set') } else { $state += ($n + '=missing'); $missingEnv += $n }
+    if (Get-HubEnv $n) { $state += ($n + '=set') } else { $state += ($n + '=missing'); $missingEnv += $n }
 }
 Write-Output ("ENV: " + ($state -join ' '))
 Write-Output ("HUB: {dir} status={status}")
+{host_block}
 if ($Offline) {
     Write-Output 'STATUS: OK (offline)'
     exit 0
@@ -372,12 +377,39 @@ KILO_JSON = """{
       "**/_private/**": "deny",
       "*": "allow"
     },
-    "write": { ".env*": "deny", "**/.env*": "deny", "*": "allow" },
-    "edit": { ".env*": "deny", "**/.env*": "deny", ".git/**": "deny", "**/.git/**": "deny", "*": "allow" },
+    "write": {
+      ".env*": "deny",
+      "**/.env*": "deny",
+      ".git/**": "deny",
+      "**/.git/**": "deny",
+      "node_modules/**": "deny",
+      "**/node_modules/**": "deny",
+      "_private/**": "deny",
+      "**/_private/**": "deny",
+      "*": "allow"
+    },
+    "edit": {
+      ".env*": "deny",
+      "**/.env*": "deny",
+      ".git/**": "deny",
+      "**/.git/**": "deny",
+      "node_modules/**": "deny",
+      "**/node_modules/**": "deny",
+      "_private/**": "deny",
+      "**/_private/**": "deny",
+      "*": "allow"
+    },
     "glob": "allow",
     "grep": "allow",
     "webfetch": "allow",
-    "skill": "allow"
+    "skill": "allow",
+    "task": {
+      "*": "deny",
+      "general": "allow",
+      "explore": "allow",
+      "reviewer": "allow",
+      "cheap-worker": "allow"
+    }
   }
 }
 """
@@ -397,7 +429,8 @@ node_modules/
 
 EVALS = """# Evals — {dir}
 
-Runner is not implemented yet; every task below has a deterministic grader command.
+Runner is not implemented yet; every runnable task below has a deterministic grader command.
+A `not runnable` row states why it cannot be graded yet and is not a pass.
 
 | # | Task | Grader | Expected |
 |---|---|---|---|
@@ -427,12 +460,31 @@ def render_verify(hub):
         smoke_block = "    " + smoke.replace("\n", "\n    ")
     else:
         smoke_block = "    throw 'no live smoke defined for this hub'"
+    hosts = hub.get("host_block", "")
+    host_block = hosts + "\n" if hosts else ""
     return (VERIFY
             .replace("{slug}", hub["slug"])
             .replace("{dir}", hub["dir"])
             .replace("{status}", hub["status"])
             .replace("{env_array}", env_array)
+            .replace("{host_block}\n", host_block)
             .replace("{smoke}", smoke_block))
+
+
+def eval_row(index, task):
+    lowered = task.lower()
+    if "not runnable" in lowered or "without confirm" in lowered:
+        return f"| {index} | {task} | - (not runnable) | n/a |"
+    mode = "-Live" if "-Live" in task else "-Offline"
+    return f"| {index} | {task} | `scripts/verify.ps1 {mode}` | exit 0 |"
+
+
+def eval_rows_for(hub):
+    explicit = hub.get("eval_rows", [])
+    if explicit:
+        return [f"| {i} | {row['task']} | {row['grader']} | {row['expected']} |"
+                for i, row in enumerate(explicit, 1)]
+    return [eval_row(i, task) for i, task in enumerate(hub.get("evals", []), 1)]
 
 
 def render(hub):
@@ -450,15 +502,7 @@ def render(hub):
     if hub["status"] == "blocked":
         open_items = ("- Obtain access: " + ", ".join(hub.get("auth", [])) + " are not configured.\n"
                       "- Move status to `partial` after the first successful `-Live` run.")
-    evals = hub.get("evals", [])
-    eval_rows = "\n".join(
-        "| {} | {} | `scripts/verify.ps1 {}` | exit 0 |".format(
-            i,
-            task,
-            "-Offline" if "-Offline" in task else ("-Live" if "-Live" in task else "-Offline"),
-        )
-        for i, task in enumerate(evals, 1)
-    ) or "| - | - | - | - |"
+    eval_rows = "\n".join(eval_rows_for(hub)) or "| - | - | - | - |"
 
     files = {
         "README.md": README.format(
@@ -466,9 +510,11 @@ def render(hub):
             summary=hub["summary"], consumers=consumers, slug=hub["slug"]),
         "CONTRACT.md": CONTRACT.format(
             title=hub["title"], date=DATE, status=hub["status"], mode=hub["mode"],
+            version=hub.get("contract_version", 1),
             service=hub["service"], summary=hub["summary"],
             auth_list=auth_list or "_(none)_",
             auth_notes=hub.get("auth_notes", ""),
+            verify_note=hub.get("verify_note", ""),
             endpoints=endpoints, limits=limits, gotchas=gotchas, consumers=consumers),
         "FAILURES.md": FAILURES.format(
             title=hub["title"], rows=fail_rows, unknown=unknown),
@@ -480,7 +526,8 @@ def render(hub):
         os.path.join(".kilo", "skills", hub["slug"], "SKILL.md"): SKILL.format(
             slug=hub["slug"], title=hub["title"], service=hub["service"],
             dir=hub["dir"], status=hub["status"]),
-        os.path.join(".kilo", "harness.md"): HARNESS.format(dir=hub["dir"], date=DATE),
+        os.path.join(".kilo", "harness.md"): HARNESS.format(
+            dir=hub["dir"], initialized=hub.get("initialized", DATE)),
         os.path.join("scripts", "verify.ps1"): render_verify(hub),
         os.path.join(".memory", "project_brief.md"): BRIEF.format(
             dir=hub["dir"], service=hub["service"], consumers=consumers,
@@ -491,9 +538,10 @@ def render(hub):
             else "Подключить первого потребителя к контракту и прогнать `-Live`."),
         os.path.join(".memory", "progress.md"): PROGRESS.format(
             dir=hub["dir"], status=hub["status"], mode=hub["mode"], date=DATE,
+            version=hub.get("contract_version", 1),
             open_items=open_items),
     }
-    if evals:
+    if hub.get("eval_rows") or hub.get("evals"):
         files[os.path.join("evals", "tasks.md")] = EVALS.format(dir=hub["dir"], rows=eval_rows)
     return files
 
@@ -513,6 +561,8 @@ def main() -> int:
     parser.add_argument("--registry", default=None)
     parser.add_argument("--only", default="")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--force-memory", action="store_true",
+                        help="with --force, also rewrite .memory/ (hand-maintained state)")
     args = parser.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -533,7 +583,9 @@ def main() -> int:
         repo_root = os.path.join(args.root, hub["dir"])
         created = 0
         for rel, content in render(hub).items():
-            if write_if_missing(os.path.join(repo_root, rel), content, args.force):
+            keep_memory = rel.replace("\\", "/").startswith(".memory/")
+            force = args.force and (args.force_memory or not keep_memory)
+            if write_if_missing(os.path.join(repo_root, rel), content, force):
                 created += 1
         present = os.path.isdir(repo_root)
         print(f"{hub['dir']}: {'created' if created else 'unchanged'} ({created} files) status={hub['status']}")

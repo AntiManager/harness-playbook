@@ -3,7 +3,7 @@
 
 Five checks, no model calls:
   1. playbook self-check passes
-  2. drift scan stays within the 2026-11-05 baseline (21 repos, no new drift above 44 findings)
+  2. drift scan stays within the 2026-11-17 baseline (18 findings; repo count may grow)
   3. an invalid card is rejected
   4. a singular .kilo/skill path is flagged
   5. templates and registry are complete (16 cards, provenance sections)
@@ -45,12 +45,11 @@ def check_drift_baseline() -> None:
         for finding in row["findings"]:
             key = finding.split()[0]
             counts[key] = counts.get(key, 0) + 1
-    baseline = {"AGENTS": 10, "autoload": 10, "empty": 4, "model": 10, "no": 8, "skills": 2}
-    # Rollout repairs drift, so the total may only shrink; a new finding type or a
-    # count above the pre-cleanup baseline means the lint itself regressed.
+    baseline = {"autoload": 0, "model": 0, "no": 0}
+    # S2 cleaned the 2026-11-17 drift to zero, so this is now a hard gate: any finding
+    # type or count above the baseline means a repo regressed or the lint broke.
     ok = (
-        len(repos) == 21
-        and total <= 44
+        total <= 0
         and set(counts) <= set(baseline)
         and all(counts.get(k, 0) <= v for k, v in baseline.items())
     )

@@ -1,7 +1,7 @@
 # Harness Playbook
 
 Curated, evidence-based catalog of reusable Kilo harness patterns, project archetypes and
-copy-ready templates for the 21 repos under `C:\Work\Python`.
+copy-ready templates for the 31 repos under `C:\Work\Python`.
 
 **Not a second constitution.** Global rules stay in `~/.config/kilo/AGENTS.md`; the playbook
 catalogs local/reusable patterns and points to their sources. It never forks a rule body.
@@ -68,8 +68,11 @@ python -X utf8 harness-playbook\scripts\harness_lint.py          # repo drift (e
 python -X utf8 harness-playbook\scripts\playbook_eval.py         # 5 deterministic self-evals
 ```
 
-`playbook_eval.py` asserts self-check, the 21-repo/44-finding baseline, invalid-card rejection,
-singular-skills-path detection, and template/registry completeness. No model calls.
+Per-repo drift flags: missing `AGENTS.md`, `AGENTS.md` over 60 lines, unknown model pin, an autoload
+set above the boot quartet, a singular skills path, artifacts without a description, and a missing
+`.kilo/harness.md` verify recipe. `playbook_eval.py` asserts self-check, a zero drift baseline,
+invalid-card rejection, singular-skills-path detection, and template/registry completeness. No model
+calls.
 
 ## Analysis
 
@@ -77,6 +80,7 @@ Dated review notes; the v2 plan is in `.kilo/plans/harness-playbook-v2-2026-11-0
 
 | Date | Note | Verdict |
 |---|---|---|
+| 2026-11-17 | [Harness optimization](analysis/2026-11-17-harness-optimization.md) | 10 findings with measurements; slices S0–S5 (probe, MCP/boot cost, drift, permissions, evals) |
 | 2026-11-11 | [Community refresh](analysis/2026-11-11-community-refresh.md) | re-read AGENTS.md + Claude Code; applied `/spec`, `.run/` ignore, client pointer; rejected "1M window" and hooks |
 | 2026-11-05 | [Community practices](analysis/2026-11-05-community-practices.md) | adopt/adapt/reject table with sources (AGENTS.md, Claude Code, Agent Skills, Kilo, Spec Kit, context engineering) |
 | 2026-11-05 | [Gap analysis](analysis/2026-11-05-playbook-gaps.md) | 12 gaps, target v2 structure, acceptance |

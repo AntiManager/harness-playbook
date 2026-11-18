@@ -238,9 +238,9 @@
       "dir": "integration-yandex-metrica",
       "slug": "yandex-metrica",
       "title": "Yandex Metrica",
-      "service": "Yandex Metrica JS counter (live) and Metrica API (planned)",
-      "status": "partial",
-      "mode": "client tracking live, API not connected",
+      "service": "Yandex Metrica JS counter and Metrica API (both live)",
+      "status": "live",
+      "mode": "client tracking live, API live",
       "summary": "Contracts for counter and goal tracking on sites, plus the access plan and the report contract for Metrica API (Management, Reporting, Logs).",
       "consumers": [
         "AntiManager: site/js/analytics.js (METRIKA_ID 111010335, reachGoal)",
@@ -250,7 +250,7 @@
       "auth": [
         "YANDEX_METRIKA_TOKEN"
       ],
-      "auth_notes": "Token is a Yandex OAuth app token with metrika:read (and metrika:write only for management). No Direct application is required. Not yet issued: see Access plan in CONTRACT.md.",
+      "auth_notes": "Token is a Yandex OAuth app token with metrika:read (and metrika:write only for management). No Direct application is required. Issued 2026-11-18 for the account that owns the counters; stored only as the User environment variable. See Access plan in CONTRACT.md.",
       "endpoints": [
         "Client: ym(<counterId>, 'reachGoal', '<goal>', params)",
         "API: GET https://api-metrika.yandex.net/management/v1/counters",
@@ -309,6 +309,8 @@
       "title": "Yandex Direct",
       "service": "Yandex Direct API v5 (JSON) and v501 (Unified campaigns, responsive ads)",
       "status": "blocked",
+      "contract_version": 2,
+      "initialized": "2026-11-17",
       "mode": "read + write (gated)",
       "summary": "Campaign management contract for Direct API v5/v501, held blocked until OAuth app + approved API application exist. Sandbox first; live writes only with explicit confirmation and read-only default.",
       "consumers": [
@@ -319,7 +321,9 @@
         "YANDEX_DIRECT_CLIENT_LOGIN",
         "YANDEX_DIRECT_SANDBOX"
       ],
-      "auth_notes": "Requires an OAuth app with direct:api AND an approved access request in the Direct cabinet (Settings -> API). Approval takes 1 hour to 3 days, up to 7 days at peak. Agency accounts pass Client-Login per call.",
+      "auth_notes": "Requires an OAuth app with direct:api AND an approved access request in the Direct cabinet (Settings -> API). Approval takes 1 hour to 3 days, up to 7 days at peak. Agency accounts pass Client-Login per call.\n\nWhen `YANDEX_DIRECT_SANDBOX` is `1`, `true` or `yes`, `YANDEX_DIRECT_TOKEN` must hold the sandbox user's token: sandbox and live tokens are not interchangeable. The gate then targets `api-sandbox.direct.yandex.com` and prints the chosen host as `HOST:`.",
+      "verify_note": "\nBoth modes print `HOST:`; `-Live` resolves each variable from the Process env first, then the User env.\n",
+      "host_block": "$base = 'https://api.direct.yandex.com'\nif ((Get-HubEnv 'YANDEX_DIRECT_SANDBOX') -match '^(1|true|yes)$') {\n    $base = 'https://api-sandbox.direct.yandex.com'\n}\nWrite-Output (\"HOST: \" + $base)",
       "endpoints": [
         "POST https://api.direct.yandex.com/json/v5/<service> (campaigns, adgroups, ads, keywords, bids, reports, dictionaries)",
         "POST https://api.direct.yandex.com/json/v501/... (UnifiedCampaign, responsive ads, callouts linking)",
@@ -368,11 +372,28 @@
         "https://yandex.ru/dev/direct/doc/ru/access-request.md",
         "https://github.com/Silverov/yandex-direct-skill (audit methodology, MIT)"
       ],
-      "smoke": "if (-not $env:YANDEX_DIRECT_TOKEN) { throw 'no token' }; $h = @{ Authorization = 'Bearer ' + $env:YANDEX_DIRECT_TOKEN; 'Accept-Language' = 'ru' }; $b = '{\"method\":\"get\",\"params\":{\"SelectionCriteria\":{},\"FieldNames\":[\"Id\",\"Name\"]}}'; $r = Invoke-RestMethod -Uri 'https://api.direct.yandex.com/json/v5/campaigns' -Method Post -Headers $h -ContentType 'application/json; charset=utf-8' -Body $b -TimeoutSec 30; \"campaigns: $($r.result.Campaigns.Count)\"",
-      "evals": [
-        "verify.ps1 -Offline exits 0 and reports BLOCKED without a token",
-        "verify.ps1 -Live (sandbox) lists campaigns",
-        "a mutation call without confirm is refused"
+      "smoke": "$token = Get-HubEnv 'YANDEX_DIRECT_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'Bearer ' + $token; 'Accept-Language' = 'ru' }\n$b = '{\"method\":\"get\",\"params\":{\"SelectionCriteria\":{},\"FieldNames\":[\"Id\",\"Name\"]}}'\n$r = Invoke-RestMethod -Uri ($base + '/json/v5/campaigns') -Method Post -Headers $h -ContentType 'application/json; charset=utf-8' -Body $b -TimeoutSec 30\n\"campaigns: $($r.result.Campaigns.Count) host=$base\"",
+      "eval_rows": [
+        {
+          "task": "`-Offline` exits 0 and prints `ENV:` for the three names plus `HOST:`",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Offline`",
+          "expected": "exit 0 and `STATUS: OK (offline)`"
+        },
+        {
+          "task": "with `YANDEX_DIRECT_SANDBOX=1`, `-Offline` selects the sandbox host",
+          "grader": "`$env:YANDEX_DIRECT_SANDBOX='1'; pwsh -NoProfile -File scripts/verify.ps1 -Offline`",
+          "expected": "exit 0 and `HOST: https://api-sandbox.direct.yandex.com`"
+        },
+        {
+          "task": "`-Live` lists campaigns on the selected host",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live`",
+          "expected": "exit 0 and one `campaigns:` line"
+        },
+        {
+          "task": "a mutation call without confirm is refused",
+          "grader": "- (not runnable)",
+          "expected": "n/a"
+        }
       ]
     },
     {
