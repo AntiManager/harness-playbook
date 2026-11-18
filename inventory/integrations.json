@@ -414,7 +414,8 @@
       "slug": "yandex-wordstat",
       "title": "Yandex Wordstat",
       "service": "Wordstat API inside Yandex Search API (Yandex Cloud)",
-      "status": "blocked",
+      "status": "partial",
+      "initialized": "2026-11-17",
       "mode": "read",
       "summary": "Keyword frequency, dynamics and regional distribution. The legacy api.wordstat.yandex.net endpoints are dead (404); access now requires a Yandex Cloud billing account, folder and service-account API key, and is paid per request.",
       "consumers": [
@@ -474,11 +475,38 @@
         "https://github.com/seyka-ai/yandex-tools-mcp (MIT, yandex-wordstat-mcp)",
         "https://github.com/Yurich-ru/yandex-ads-mcp (5 Wordstat tools)"
       ],
-      "smoke": "if (-not $env:YC_API_KEY) { throw 'no key' }; $h = @{ Authorization = 'Api-key ' + $env:YC_API_KEY }; $b = '{\"folderId\":\"' + $env:YC_FOLDER_ID + '\",\"phrase\":\"натяжные потолки\",\"numPhrases\":5}'; $r = Invoke-RestMethod -Uri 'https://searchapi.api.cloud.yandex.net/v2/wordstat/topRequests' -Method Post -Headers $h -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($b)) -TimeoutSec 30; \"total: $($r.totalCount)\"",
+      "smoke": "$key = Get-HubEnv 'YC_API_KEY'\n$folder = Get-HubEnv 'YC_FOLDER_ID'\nif (-not $key -or -not $folder) { throw 'no key or folder' }\n$h = @{ Authorization = 'Api-key ' + $key }\n$b = @{ folderId = $folder; phrase = 'натяжные потолки'; numPhrases = 5 } | ConvertTo-Json -Compress\n$r = Invoke-RestMethod -Uri 'https://searchapi.api.cloud.yandex.net/v2/wordstat/topRequests' -Method Post -Headers $h -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($b)) -TimeoutSec 30\nif ($r.error) { throw ('API error: ' + ($r.error | ConvertTo-Json -Compress)) }\nif (-not ($r.PSObject.Properties.Name -contains 'totalCount')) { throw 'no totalCount in response' }\n\"total: $($r.totalCount)\"",
+      "eval_rows": [
+        {
+          "task": "`-Offline` with env unset exits 0 and prints `READY: blocked` plus the missing names",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Offline`",
+          "expected": "exit 0 and `READY: blocked (missing: YC_API_KEY, YC_FOLDER_ID)`"
+        },
+        {
+          "task": "`-Live` with env unset exits 2 without a network call",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live`",
+          "expected": "exit 2 and `STATUS: BLOCKED`"
+        },
+        {
+          "task": "harness and document invariants hold",
+          "grader": "`pwsh -NoProfile -File scripts/selfcheck.ps1`",
+          "expected": "exit 0 and `SELFCHECK: OK`"
+        },
+        {
+          "task": "`-Offline -Live` together is refused",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Offline -Live`",
+          "expected": "exit 1 and `STATUS: FAIL`"
+        },
+        {
+          "task": "a missing required file fails the gate",
+          "grader": "copy the hub to a temp dir, remove `.memory/progress.md`, run `scripts/verify.ps1 -Offline`",
+          "expected": "exit 1 and `STATUS: FAIL (missing: ...)`"
+        }
+      ],
       "evals": [
-        "verify.ps1 -Offline exits 0 and reports BLOCKED without a key",
-        "verify.ps1 -Live returns totalCount for a seed phrase",
-        "a request without numPhrases is rejected by the API (documented behaviour)"
+        "verify.ps1 -Offline exits 0, prints READY: blocked with env unset, and never touches the network",
+        "verify.ps1 -Live without env exits 2 and prints the missing names",
+        "selfcheck.ps1 verifies autoload, skill, failure matrix, secrets, encoding and state"
       ]
     },
     {

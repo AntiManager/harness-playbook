@@ -41,11 +41,13 @@ README = """# Integration hub — {title}
 | Auth, endpoints, limits, change policy | `CONTRACT.md` |
 | Symptom → cause → action | `FAILURES.md` |
 | Agent procedure | `.kilo/skills/{slug}/SKILL.md` |
-| Gate | `scripts/verify.ps1 -Offline` (structure + env state), `-Live` (smoke) |
+| Gate | `scripts/verify.ps1 -Offline` (structure + `READY:` line), `-Live` (smoke) |
 
 ## How another repo uses this hub
 
-1. Run `scripts/verify.ps1 -Offline`; on exit 2 the integration is not configured here.
+1. Run `scripts/verify.ps1 -Offline`; read the `READY:` line. `READY: blocked (...)` means the
+   integration is not configured here — stop and report the missing env names. Only `-Live`
+   exits 2 for a missing configuration.
 2. On an error read the matching row in `FAILURES.md` — do not explore this repo file by file.
 3. Never copy this text into a consumer repo: link the hub and pin a commit.
 
@@ -101,11 +103,12 @@ Version: {version} · {date} · status: **{status}** · mode: {mode}
 ## Verify
 
 ```powershell
-pwsh -NoProfile -File scripts/verify.ps1 -Offline   # structure + env state, no network
+pwsh -NoProfile -File scripts/verify.ps1 -Offline   # structure + READY line, no network
 pwsh -NoProfile -File scripts/verify.ps1 -Live      # live smoke, needs configured env
 ```
 
-Exit codes: `0` ready, `2` not configured (blocked), `1` broken.
+Exit codes: `0` structure OK (read `READY:`), `2` not configured (`-Live` only), `1` broken.
+`-Offline` never proves access: `READY: blocked (...)` lists the missing env names.
 {verify_note}
 ## Change policy
 
@@ -146,7 +149,8 @@ matrix and the verify gate. Consumers link this repo and pin a commit; they neve
 
 | Job | Command | Success looks like |
 |---|---|---|
-| structure + env | `pwsh -NoProfile -File scripts/verify.ps1 -Offline` | `STATUS: OK (offline)` |
+| structure + readiness | `pwsh -NoProfile -File scripts/verify.ps1 -Offline` | exit 0, `STATUS: OK (offline)`, `READY:` line |
+| selfcheck | `pwsh -NoProfile -File scripts/selfcheck.ps1` | `SELFCHECK: OK` |
 | live smoke | `pwsh -NoProfile -File scripts/verify.ps1 -Live` | `STATUS: OK (live)` and one evidence line |
 | repo check | `pwsh -NoProfile -File $env:USERPROFILE\\.config\\kilo\\scripts\\verify_repo.ps1 -Repo .` | `STATUS: OK` |
 | harness lint | `python -X utf8 C:\\Work\\Python\\harness-playbook\\scripts\\harness_lint.py --repo {dir}` | `0 findings` |
@@ -157,6 +161,8 @@ matrix and the verify gate. Consumers link this repo and pin a commit; they neve
 - No write operation without an explicit user decision and a confirmation argument.
 - Every new failure gets a `FAILURES.md` row in the same change as the fix.
 - Contract changes bump `Version` and are announced to consumers by commit message prefix `contract:`.
+- Generated files are not hand-edited: change `harness-playbook/inventory/integrations.json` and
+  regenerate (see `.kilo/harness.md`). Status lives in `state.json`.
 
 ## Where to look
 
@@ -182,14 +188,17 @@ description: Use when a task touches {service} through this hub — lists the co
 
 ## Procedure
 
-1. Read `CONTRACT.md` in `C:\\Work\\Python\\{dir}` (auth names, endpoints, limits).
-2. Run the gate:
-   `pwsh -NoProfile -File C:\\Work\\Python\\{dir}\\scripts\\verify.ps1 -Offline`
-   - exit `0` — configured; continue;
-   - exit `2` — not configured (status `{status}`); report the missing env names and stop;
+1. Read `CONTRACT.md` at the hub root `C:\\Work\\Python\\{dir}` (auth names, endpoints, limits).
+   If the hub is checked out elsewhere, use that root; never copy its text.
+2. Run the gate from the hub root:
+   `pwsh -NoProfile -File scripts/verify.ps1 -Offline`
+   - exit `0` and `READY: yes` — configured; continue;
+   - exit `0` and `READY: blocked (...)` — not configured (status `{status}`); report the missing
+     env names, do not call the service, stop;
    - exit `1` — broken repository; fix before calling the service.
 3. On a service error, read the matching row in `FAILURES.md` and apply the action there.
-4. For a live check use `-Live`; report the exact evidence line, not a summary.
+4. For a live check use `-Live`; exit `2` means not configured. Report the exact evidence line,
+   not a summary.
 
 ## Rules
 
@@ -214,20 +223,24 @@ HARNESS = """# Harness provenance — {dir}
 - Patterns: `HP-001, HP-002, HP-003, HP-007, HP-012, HP-015`
 - Decisions followed: `ADR 0001, ADR 0003`
 - Initialized: {initialized}
+- Regenerate: `python -X utf8 C:\\Work\\Python\\harness-playbook\\scripts\\new_integration_hub.py --only {key} --force`
+  (keeps `.memory/`; change the registry first, never hand-edit generated files)
 
 ## Verify
 
 - Command: `pwsh -NoProfile -File scripts/verify.ps1 -Offline`
-- Success: exit 0 and `STATUS: OK (offline)`
-- Scope: required files present, env names known, skill resolvable
-- Not covered: service availability and credentials (use `-Live` with real env)
+- Success: exit 0, `STATUS: OK (offline)`, and a `READY:` line
+- Scope: required files, boot trio, `state.json`, skill file, env presence; `selfcheck.ps1` adds
+  autoload, skill frontmatter, failure-matrix, secret-pattern and encoding checks
+- Not covered: service availability and credentials — `READY:` only shows env presence; use
+  `-Live` to prove access
 - Full gate: `verify.ps1 -Live` plus the consumer project's own tests
 
 ## Known exceptions
 
 | Finding | Why accepted | Review by |
 |---|---|---|
-| live smoke not run in CI | real credentials are never stored in this repo | 2027-02-01 |
+| no CI; live smoke is local-only | real credentials are never stored in this repo | 2027-02-01 |
 """
 
 PROGRESS = """# Progress — {dir}
@@ -296,13 +309,17 @@ Integration hub gate. Read-only unless -Live is passed.
 Usage:
   pwsh -NoProfile -File scripts/verify.ps1 -Offline
   pwsh -NoProfile -File scripts/verify.ps1 -Live
-Exit: 0 = OK, 2 = not configured (missing env), 1 = broken.
+Exit: 0 = structure OK (read READY:), 2 = not configured in -Live, 1 = broken.
 #>
 [CmdletBinding()]
 param([switch]$Offline, [switch]$Live)
 $ErrorActionPreference = 'Stop'
+if ($Offline -and $Live) {
+    Write-Output 'STATUS: FAIL (-Offline and -Live are mutually exclusive)'
+    exit 1
+}
 $root = Split-Path -Parent $PSScriptRoot
-$required = @('README.md', 'CONTRACT.md', 'FAILURES.md', 'AGENTS.md', 'kilo.json', '.kilo\\skills\\{slug}\\SKILL.md', '.kilo\\harness.md')
+$required = @('README.md', 'CONTRACT.md', 'FAILURES.md', 'AGENTS.md', 'kilo.json', 'state.json', '.kilo\\skills\\{slug}\\SKILL.md', '.kilo\\harness.md', '.memory\\project_brief.md', '.memory\\active_context.md', '.memory\\progress.md', 'evals\\tasks.md')
 $missing = @()
 foreach ($f in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $f))) { $missing += $f }
@@ -313,18 +330,34 @@ if ($missing.Count -gt 0) {
 }
 function Get-HubEnv([string]$Name) {
     $value = [Environment]::GetEnvironmentVariable($Name, 'Process')
-    if (-not $value) { $value = [Environment]::GetEnvironmentVariable($Name, 'User') }
+    if (-not $value -and $env:OS -eq 'Windows_NT') {
+        $value = [Environment]::GetEnvironmentVariable($Name, 'User')
+    }
     return $value
 }
 $names = @({env_array})
 $state = @()
 $missingEnv = @()
 foreach ($n in $names) {
-    if (Get-HubEnv $n) { $state += ($n + '=set') } else { $state += ($n + '=missing'); $missingEnv += $n }
+    $value = Get-HubEnv $n
+    if ($value) {
+        $state += ($n + '=set')
+        Set-Item -Path ('env:' + $n) -Value $value
+    } else {
+        $state += ($n + '=missing')
+        $missingEnv += $n
+    }
 }
+try { $hubState = Get-Content -LiteralPath (Join-Path $root 'state.json') -Raw | ConvertFrom-Json }
+catch { Write-Output 'STATUS: FAIL (state.json is missing or invalid)'; exit 1 }
 Write-Output ("ENV: " + ($state -join ' '))
-Write-Output ("HUB: {dir} status={status}")
+Write-Output ("STATE: status=" + $hubState.status + " contract=" + $hubState.contract_version)
 {host_block}
+if ($missingEnv.Count -gt 0) {
+    Write-Output ("READY: blocked (missing: " + ($missingEnv -join ', ') + ")")
+} else {
+    Write-Output 'READY: yes (env present; run -Live to prove access)'
+}
 if ($Offline) {
     Write-Output 'STATUS: OK (offline)'
     exit 0
@@ -349,6 +382,7 @@ try {
 
 KILO_JSON = """{
   "$schema": "https://app.kilo.ai/config.json",
+  "model": "deepseek/deepseek-flash",
   "instructions": [
     "AGENTS.md",
     ".memory/project_brief.md",
@@ -366,6 +400,7 @@ KILO_JSON = """{
       "git push*": "ask",
       "git reset*": "ask",
       "git clean*": "ask",
+      "git checkout *": "ask",
       "git checkout -- *": "ask",
       "rm *": "ask",
       "Remove-Item*": "ask"
@@ -427,9 +462,128 @@ node_modules/
 .DS_Store
 """
 
+STATE = """{
+  "contract_version": {version},
+  "status": "{status}",
+  "mode": "{mode}",
+  "updated": "{date}"
+}
+"""
+
+SELFCHECK = """<#
+Read-only harness self-check for this integration hub.
+Usage: pwsh -NoProfile -File scripts/selfcheck.ps1
+Exit: 0 = OK, 1 = violations.
+#>
+[CmdletBinding()]
+param()
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$fail = New-Object System.Collections.Generic.List[string]
+function Add-Fail([string]$Message) { $script:fail.Add($Message) }
+
+# 1. kilo.json autoload set and skills path
+$cfgPath = Join-Path $root 'kilo.json'
+$cfg = $null
+if (-not (Test-Path -LiteralPath $cfgPath)) {
+    Add-Fail 'kilo.json is missing'
+} else {
+    try { $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json }
+    catch { Add-Fail 'kilo.json is not valid JSON' }
+}
+if ($cfg) {
+    foreach ($item in @('AGENTS.md', '.memory/project_brief.md', '.memory/active_context.md', '.memory/progress.md')) {
+        if ($cfg.instructions -notcontains $item) { Add-Fail ('kilo.json instructions missing ' + $item) }
+    }
+    if ($cfg.skills.paths -notcontains '.kilo/skills') { Add-Fail 'kilo.json skills.paths missing .kilo/skills' }
+}
+
+# 2. skill frontmatter
+$skillPath = Join-Path $root '.kilo/skills/{slug}/SKILL.md'
+if (-not (Test-Path -LiteralPath $skillPath)) {
+    Add-Fail 'skill file is missing'
+} else {
+    $skill = Get-Content -LiteralPath $skillPath -Raw
+    if ($skill -notmatch '(?s)^---\\s*\\r?\\n(.*?)\\r?\\n---') {
+        Add-Fail 'skill frontmatter is missing'
+    } else {
+        $head = $Matches[1]
+        if ($head -notmatch '(?m)^name:\\s*{slug}\\s*$') { Add-Fail 'skill name does not match the directory' }
+        if ($head -notmatch '(?m)^description:\\s*\\S+') { Add-Fail 'skill description is missing' }
+    }
+}
+
+# 3. failure matrix rows
+$failuresPath = Join-Path $root 'FAILURES.md'
+$rows = 0
+if (-not (Test-Path -LiteralPath $failuresPath)) {
+    Add-Fail 'FAILURES.md is missing'
+} else {
+    foreach ($line in (Get-Content -LiteralPath $failuresPath)) {
+        if ($line -notmatch '^\\|') { continue }
+        if ($line -match '^\\|\\s*-') { continue }
+        if ($line -match '^\\|\\s*Symptom') { continue }
+        $cells = $line.Split('|')
+        if ($cells.Count -lt 6) { Add-Fail ('FAILURES row has fewer than 4 columns: ' + $line); continue }
+        for ($i = 1; $i -le 4; $i++) {
+            if ([string]::IsNullOrWhiteSpace($cells[$i])) { Add-Fail ('FAILURES row has an empty cell: ' + $line) }
+        }
+        $rows++
+    }
+    if ($rows -eq 0) { Add-Fail 'FAILURES.md has no rows' }
+}
+
+# 4. secret-like values in tracked docs
+$patterns = @(
+    'Api-key\\s+[A-Za-z0-9_-]{16,}',
+    'Bearer\\s+[A-Za-z0-9._-]{16,}',
+    'YC_API_KEY\\s*=\\s*\\S+',
+    'https?://\\S*(token|secret|password|api_key)='
+)
+foreach ($doc in @('README.md', 'CONTRACT.md', 'FAILURES.md', 'AGENTS.md', '.kilo/skills/{slug}/SKILL.md', 'scripts/verify.ps1')) {
+    $path = Join-Path $root $doc
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+    $text = Get-Content -LiteralPath $path -Raw
+    foreach ($p in $patterns) {
+        if ($text -match $p) { Add-Fail ('secret-like value in ' + $doc) }
+    }
+}
+
+# 5. UTF-8 without BOM and no replacement characters
+foreach ($file in @('README.md', 'CONTRACT.md', 'FAILURES.md', 'AGENTS.md', 'kilo.json', 'state.json', '.kilo/skills/{slug}/SKILL.md', '.kilo/harness.md', 'evals/tasks.md')) {
+    $path = Join-Path $root $file
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+    $bytes = [IO.File]::ReadAllBytes($path)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { Add-Fail ('BOM in ' + $file) }
+    if ((Get-Content -LiteralPath $path -Raw).Contains([char]0xFFFD)) { Add-Fail ('replacement character in ' + $file) }
+}
+
+# 6. state.json
+$statePath = Join-Path $root 'state.json'
+$state = $null
+if (-not (Test-Path -LiteralPath $statePath)) {
+    Add-Fail 'state.json is missing'
+} else {
+    try { $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json }
+    catch { Add-Fail 'state.json is not valid JSON' }
+}
+if ($state) {
+    if ($state.status -notin @('live', 'partial', 'blocked', 'deferred')) { Add-Fail ('state.json has an unknown status: ' + $state.status) }
+    if (($state.contract_version -as [int]) -lt 1) { Add-Fail 'state.json contract_version is not a positive integer' }
+}
+
+$checks = 6
+if ($fail.Count -gt 0) {
+    $fail | ForEach-Object { Write-Output ('SELFCHECK: FAIL ' + $_) }
+    exit 1
+}
+Write-Output ('SELFCHECK: OK (' + $checks + ' checks)')
+exit 0
+"""
+
 EVALS = """# Evals — {dir}
 
-Runner is not implemented yet; every runnable task below has a deterministic grader command.
+No local runner is wired to this table; every runnable task below has a deterministic grader command.
 A `not runnable` row states why it cannot be graded yet and is not a pass.
 
 | # | Task | Grader | Expected |
@@ -487,6 +641,14 @@ def eval_rows_for(hub):
     return [eval_row(i, task) for i, task in enumerate(hub.get("evals", []), 1)]
 
 
+def render_state(hub):
+    return (STATE
+            .replace("{version}", str(hub.get("contract_version", 1)))
+            .replace("{status}", hub["status"])
+            .replace("{mode}", hub["mode"])
+            .replace("{date}", DATE))
+
+
 def render(hub):
     rows = hub.get("failures", [])
     fail_rows = "\n".join("| {} | {} | {} | {} |".format(*row) for row in rows) if rows else "| - | - | - | - |"
@@ -527,8 +689,11 @@ def render(hub):
             slug=hub["slug"], title=hub["title"], service=hub["service"],
             dir=hub["dir"], status=hub["status"]),
         os.path.join(".kilo", "harness.md"): HARNESS.format(
-            dir=hub["dir"], initialized=hub.get("initialized", DATE)),
+            dir=hub["dir"], key=hub["key"], slug=hub["slug"],
+            initialized=hub.get("initialized", DATE)),
         os.path.join("scripts", "verify.ps1"): render_verify(hub),
+        os.path.join("scripts", "selfcheck.ps1"): SELFCHECK.replace("{slug}", hub["slug"]),
+        "state.json": render_state(hub),
         os.path.join(".memory", "project_brief.md"): BRIEF.format(
             dir=hub["dir"], service=hub["service"], consumers=consumers,
             status=hub["status"], mode=hub["mode"]),
@@ -541,8 +706,8 @@ def render(hub):
             version=hub.get("contract_version", 1),
             open_items=open_items),
     }
-    if hub.get("eval_rows") or hub.get("evals"):
-        files[os.path.join("evals", "tasks.md")] = EVALS.format(dir=hub["dir"], rows=eval_rows)
+    files[os.path.join("evals", "tasks.md")] = EVALS.format(
+        dir=hub["dir"], rows=eval_rows or "| - | - | - | - |")
     return files
 
 
