@@ -1126,7 +1126,7 @@
       "slug": "google",
       "title": "Google APIs (OAuth 2.0)",
       "service": "Google OAuth 2.0 with Search Console, Drive, Sheets and Cloud Translation",
-      "status": "blocked",
+      "status": "partial",
       "mode": "read (+ OIDC sign-in later)",
       "summary": "One OAuth 2.0 credential model for Google APIs. Primary scope is Google Search Console (sites, search analytics, sitemaps); Drive and Sheets are read-only options; Cloud Translation absorbs the former google-translate deferred entry. Gmail and restricted Drive scopes are out of scope until Google verification and a CASA assessment exist.",
       "consumers": [
@@ -1160,12 +1160,14 @@
         "Quotas are per Google Cloud project"
       ],
       "gotchas": [
-        "A consent screen in Testing issues a refresh token that expires in 7 days; publish the app or use a service account",
+        "A consent screen in Testing issues a refresh token that expires in 7 days; publishing the app needs Google verification of the sensitive Search Console/Sheets scopes (verified domain, privacy policy, review), so rotation or a service account is the practical answer",
         "Gmail and most Drive scopes are restricted: Google verification plus a CASA security assessment is required; do not start there",
         "sc-domain:example.com and https://example.com/ are different siteUrl values",
         "The oob redirect was removed; use a loopback redirect",
         "A service account must be added as a user in Search Console before it can read a property",
         "The Testing-mode 7-day expiry also breaks long-running scheduled jobs",
+        "A service account avoids the 7-day expiry and app verification, but its JSON key is a long-lived secret: keep it in GOOGLE_APPLICATION_CREDENTIALS outside the repo and add its email as a user of every Search Console property",
+        "After rotating the refresh token, update state.json token_expires_on (Testing = issue date + 7 days); otherwise EXPIRES and the selfcheck expiry gate are stale",
         "Requests may need the local proxy; a timeout is not an auth error"
       ],
       "failures": [
@@ -1192,6 +1194,18 @@
           "redirect URI not registered for the client",
           "register the exact loopback URI in the OAuth client",
           "-"
+        ],
+        [
+          "access_denied: The developer hasn't given you access to this app",
+          "the consent screen is in Testing and the account is not a saved test user (the email chip must be committed with Enter before Save)",
+          "add the account under Audience > Test users, confirm the counter shows 1 user, then retry the consent URL",
+          "2026-11-18: Access blocked page shown right after the consent URL"
+        ],
+        [
+          "Playwright or automated Chromium cannot complete the Google sign-in",
+          "Google refuses account login from automation-controlled browsers",
+          "log in manually in the Playwright window; if the automation is rejected, run the consent flow in a normal browser",
+          "2026-11-18: manual sign-in in the Playwright window, consent in the same session"
         ],
         [
           "timeout or connection reset",
