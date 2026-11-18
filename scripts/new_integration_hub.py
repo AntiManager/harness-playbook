@@ -96,7 +96,7 @@ Version: {version} · {date} · status: **{status}** · mode: {mode}
 
 {gotchas}
 
-## Consumers and evidence
+{extra}## Consumers and evidence
 
 {consumers}
 
@@ -230,10 +230,12 @@ HARNESS = """# Harness provenance — {dir}
 
 - Command: `pwsh -NoProfile -File scripts/verify.ps1 -Offline`
 - Success: exit 0, `STATUS: OK (offline)`, and a `READY:` line
-- Scope: required files, boot trio, `state.json`, skill file, env presence; `selfcheck.ps1` adds
-  autoload, skill frontmatter, failure-matrix, secret-pattern, encoding and
-  contract/README/registry sync checks (the registry is read from `HARNESS_REGISTRY` or the
-  sibling `harness-playbook` checkout, so selfcheck needs that checkout)
+- Scope: required files, boot trio, `state.json`, skill file and env presence; it prints the token
+  expiry from `state.json`. `selfcheck.ps1` adds autoload, skill frontmatter, failure-matrix,
+  secret-pattern, encoding, contract/README/registry sync and token-expiry checks. The registry
+  comes from `HARNESS_REGISTRY` or the sibling `harness-playbook` checkout; when it is absent the
+  sync check is a WARN, and `-RequireRegistry` turns that into a failure.
+- CI: `.github/workflows/gate.yml` runs `-Offline` and `selfcheck.ps1` on every push (no secrets).
 - Not covered: service availability and credentials — `READY:` only shows env presence; use
   `-Live` to prove access
 - Full gate: `verify.ps1 -Live` plus the consumer project's own tests
@@ -242,7 +244,7 @@ HARNESS = """# Harness provenance — {dir}
 
 | Finding | Why accepted | Review by |
 |---|---|---|
-| no CI; live smoke is local-only | real credentials are never stored in this repo | 2027-02-01 |
+| live smoke is local-only (no CI job holds credentials) | the token lives only in the User env; the CI gate is secretless | 2027-02-01 |
 """
 
 PROGRESS = """# Progress — {dir}
@@ -311,10 +313,15 @@ Integration hub gate. Read-only unless -Live is passed.
 Usage:
   pwsh -NoProfile -File scripts/verify.ps1 -Offline
   pwsh -NoProfile -File scripts/verify.ps1 -Live
+  pwsh -NoProfile -File scripts/verify.ps1 -Offline -EnvSource Process   # negative test: ignore User env
 Exit: 0 = structure OK (read READY:), 2 = not configured in -Live, 1 = broken.
 #>
 [CmdletBinding()]
-param([switch]$Offline, [switch]$Live)
+param(
+    [switch]$Offline,
+    [switch]$Live,
+    [ValidateSet('Auto', 'Process')][string]$EnvSource = 'Auto'
+)
 $ErrorActionPreference = 'Stop'
 if ($Offline -and $Live) {
     Write-Output 'STATUS: FAIL (-Offline and -Live are mutually exclusive)'
@@ -332,7 +339,7 @@ if ($missing.Count -gt 0) {
 }
 function Get-HubEnv([string]$Name) {
     $value = [Environment]::GetEnvironmentVariable($Name, 'Process')
-    if (-not $value -and $env:OS -eq 'Windows_NT') {
+    if (-not $value -and $EnvSource -ne 'Process' -and $env:OS -eq 'Windows_NT') {
         $value = [Environment]::GetEnvironmentVariable($Name, 'User')
     }
     return $value
@@ -344,7 +351,6 @@ foreach ($n in $names) {
     $value = Get-HubEnv $n
     if ($value) {
         $state += ($n + '=set')
-        Set-Item -Path ('env:' + $n) -Value $value
     } else {
         $state += ($n + '=missing')
         $missingEnv += $n
@@ -354,6 +360,11 @@ try { $hubState = Get-Content -LiteralPath (Join-Path $root 'state.json') -Raw |
 catch { Write-Output 'STATUS: FAIL (state.json is missing or invalid)'; exit 1 }
 Write-Output ("ENV: " + ($state -join ' '))
 Write-Output ("STATE: status=" + $hubState.status + " contract=" + $hubState.contract_version)
+if ($hubState.token_expires_on) {
+    $expires = $hubState.token_expires_on
+    if ($expires -is [datetime]) { $expires = $expires.ToString('yyyy-MM-dd') }
+    Write-Output ("EXPIRES: " + $expires)
+}
 {host_block}
 if ($missingEnv.Count -gt 0) {
     Write-Output ("READY: blocked (missing: " + ($missingEnv -join ', ') + ")")
@@ -467,11 +478,31 @@ node_modules/
 .DS_Store
 """
 
+GATE_WORKFLOW = """name: gate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Structure and readiness
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/verify.ps1 -Offline
+      - name: Harness selfcheck (registry sync skipped without a sibling checkout)
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/selfcheck.ps1
+"""
+
 STATE = """{
   "contract_version": {version},
   "status": "{status}",
   "mode": "{mode}",
-  "updated": "{date}"
+  "updated": "{date}"{token_expires}
 }
 """
 
@@ -481,13 +512,25 @@ Usage: pwsh -NoProfile -File scripts/selfcheck.ps1
 Exit: 0 = OK, 1 = violations.
 #>
 [CmdletBinding()]
-param()
+param([switch]$RequireRegistry)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $fail = New-Object System.Collections.Generic.List[string]
+$warn = New-Object System.Collections.Generic.List[string]
+$checks = 0
 function Add-Fail([string]$Message) { $script:fail.Add($Message) }
+function Add-Warn([string]$Message) { $script:warn.Add($Message) }
+# ConvertFrom-Json turns ISO dates into [datetime]; normalise back to yyyy-MM-dd.
+function Get-IsoDate([object]$Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value.ToString('yyyy-MM-dd') }
+    $text = [string]$Value
+    if ($text -match '^\\d{4}-\\d{2}-\\d{2}$') { return $text }
+    return $null
+}
 
 # 1. kilo.json autoload set and skills path
+$checks++
 $cfgPath = Join-Path $root 'kilo.json'
 $cfg = $null
 if (-not (Test-Path -LiteralPath $cfgPath)) {
@@ -504,6 +547,7 @@ if ($cfg) {
 }
 
 # 2. skill frontmatter
+$checks++
 $skillPath = Join-Path $root '.kilo/skills/{slug}/SKILL.md'
 if (-not (Test-Path -LiteralPath $skillPath)) {
     Add-Fail 'skill file is missing'
@@ -519,6 +563,7 @@ if (-not (Test-Path -LiteralPath $skillPath)) {
 }
 
 # 3. failure matrix rows
+$checks++
 $failuresPath = Join-Path $root 'FAILURES.md'
 $rows = 0
 if (-not (Test-Path -LiteralPath $failuresPath)) {
@@ -538,32 +583,50 @@ if (-not (Test-Path -LiteralPath $failuresPath)) {
     if ($rows -eq 0) { Add-Fail 'FAILURES.md has no rows' }
 }
 
-# 4. secret-like values in tracked docs
+# 4. secret-like values in every tracked text file
+$checks++
 $patterns = @(
     'Api-key\\s+[A-Za-z0-9_-]{16,}',
     'Bearer\\s+[A-Za-z0-9._-]{16,}',
+    'OAuth\\s+[A-Za-z0-9._-]{20,}',
+    'y0_[A-Za-z0-9_-]{20,}',
     'YC_API_KEY\\s*=\\s*\\S+',
+    'client_secret\\s*[:=]\\s*\\S{8,}',
     'https?://\\S*(token|secret|password|api_key)='
 )
-foreach ($doc in @('README.md', 'CONTRACT.md', 'FAILURES.md', 'AGENTS.md', '.kilo/skills/{slug}/SKILL.md', 'scripts/verify.ps1')) {
-    $path = Join-Path $root $doc
+$textFiles = @()
+try {
+    $textFiles = @(& git -C $root ls-files --cached --others --exclude-standard 2>$null)
+} catch {
+    $textFiles = @()
+}
+if (-not $textFiles) {
+    $textFiles = @(Get-ChildItem -LiteralPath $root -Recurse -File |
+        ForEach-Object { $_.FullName.Substring($root.Length + 1) -replace '\\\\', '/' })
+    $textFiles = @($textFiles | Where-Object { $_ -notmatch '(^|/)\\.git/' })
+}
+foreach ($rel in $textFiles) {
+    if ($rel -notmatch '\\.(md|json|ps1|py|ya?ml|txt|toml)$') { continue }
+    $path = Join-Path $root $rel
     if (-not (Test-Path -LiteralPath $path)) { continue }
     $text = Get-Content -LiteralPath $path -Raw
-    foreach ($p in $patterns) {
-        if ($text -match $p) { Add-Fail ('secret-like value in ' + $doc) }
-    }
+    $hits = @($patterns | Where-Object { $text -match $_ })
+    if ($hits.Count -gt 0) { Add-Fail ('secret-like value in ' + $rel) }
 }
 
 # 5. UTF-8 without BOM and no replacement characters
-foreach ($file in @('README.md', 'CONTRACT.md', 'FAILURES.md', 'AGENTS.md', 'kilo.json', 'state.json', '.kilo/skills/{slug}/SKILL.md', '.kilo/harness.md', 'evals/tasks.md')) {
-    $path = Join-Path $root $file
+$checks++
+foreach ($rel in $textFiles) {
+    if ($rel -notmatch '\\.(md|json|ps1|py|ya?ml|txt|toml)$') { continue }
+    $path = Join-Path $root $rel
     if (-not (Test-Path -LiteralPath $path)) { continue }
     $bytes = [IO.File]::ReadAllBytes($path)
-    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { Add-Fail ('BOM in ' + $file) }
-    if ((Get-Content -LiteralPath $path -Raw).Contains([char]0xFFFD)) { Add-Fail ('replacement character in ' + $file) }
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { Add-Fail ('BOM in ' + $rel) }
+    if ((Get-Content -LiteralPath $path -Raw).Contains([char]0xFFFD)) { Add-Fail ('replacement character in ' + $rel) }
 }
 
 # 6. state.json
+$checks++
 $statePath = Join-Path $root 'state.json'
 $state = $null
 if (-not (Test-Path -LiteralPath $statePath)) {
@@ -577,7 +640,8 @@ if ($state) {
     if (($state.contract_version -as [int]) -lt 1) { Add-Fail 'state.json contract_version is not a positive integer' }
 }
 
-# 7. contract header sync: CONTRACT.md version and status vs state.json
+# 7. contract header sync: CONTRACT.md version, status and date vs state.json
+$checks++
 $contractPath = Join-Path $root 'CONTRACT.md'
 if (-not (Test-Path -LiteralPath $contractPath)) {
     Add-Fail 'CONTRACT.md is missing'
@@ -593,9 +657,17 @@ if (-not (Test-Path -LiteralPath $contractPath)) {
     } elseif ($state -and $Matches[1] -ne $state.status) {
         Add-Fail ('CONTRACT.md status ' + $Matches[1] + ' != state.json status ' + $state.status)
     }
+    if ($state -and $state.updated) {
+        if (-not (Get-IsoDate $state.updated)) {
+            Add-Fail ('state.json updated is not yyyy-MM-dd: ' + $state.updated)
+        } elseif ($contractText -match '·\\s*(\\d{4}-\\d{2}-\\d{2})\\s*·' -and $Matches[1] -ne (Get-IsoDate $state.updated)) {
+            Add-Fail ('CONTRACT.md date ' + $Matches[1] + ' != state.json updated ' + (Get-IsoDate $state.updated))
+        }
+    }
 }
 
 # 8. README status line sync
+$checks++
 $readmePath = Join-Path $root 'README.md'
 if (-not (Test-Path -LiteralPath $readmePath)) {
     Add-Fail 'README.md is missing'
@@ -609,12 +681,17 @@ if (-not (Test-Path -LiteralPath $readmePath)) {
 }
 
 # 9. registry sync: the hub entry exists and matches state.json
+$checks++
 $registryPath = $env:HARNESS_REGISTRY
 if (-not $registryPath) {
     $registryPath = Join-Path (Split-Path -Parent $root) 'harness-playbook\\inventory\\integrations.json'
 }
 if (-not (Test-Path -LiteralPath $registryPath)) {
-    Add-Fail ('registry not found: ' + $registryPath)
+    if ($RequireRegistry) {
+        Add-Fail ('registry not found: ' + $registryPath)
+    } else {
+        Add-Warn ('registry not found, sync check skipped: ' + $registryPath)
+    }
 } else {
     $registry = $null
     try { $registry = Get-Content -LiteralPath $registryPath -Raw | ConvertFrom-Json }
@@ -636,7 +713,25 @@ if (-not (Test-Path -LiteralPath $registryPath)) {
     }
 }
 
-$checks = 9
+# 10. token expiry tracked in state.json
+$checks++
+if ($state -and $state.token_expires_on) {
+    $expiresIso = Get-IsoDate $state.token_expires_on
+    if (-not $expiresIso) {
+        Add-Fail ('state.json token_expires_on is not yyyy-MM-dd: ' + $state.token_expires_on)
+    } else {
+        $daysLeft = [int][math]::Floor(([datetime]::ParseExact($expiresIso, 'yyyy-MM-dd', $null).Date - (Get-Date).Date).TotalDays)
+        if ($daysLeft -lt 0) {
+            Add-Fail ('token expired on ' + $expiresIso + '; re-issue it and update state.json')
+        } elseif ($daysLeft -le 30) {
+            Add-Warn ('token expires in ' + $daysLeft + ' days (' + $expiresIso + '); rotate it')
+        }
+    }
+}
+
+if ($warn.Count -gt 0) {
+    $warn | ForEach-Object { Write-Output ('SELFCHECK: WARN ' + $_) }
+}
 if ($fail.Count -gt 0) {
     $fail | ForEach-Object { Write-Output ('SELFCHECK: FAIL ' + $_) }
     exit 1
@@ -707,11 +802,14 @@ def eval_rows_for(hub):
 
 
 def render_state(hub):
+    expires = hub.get("token_expires_on")
     return (STATE
             .replace("{version}", str(hub.get("contract_version", 1)))
             .replace("{status}", hub["status"])
             .replace("{mode}", hub["mode"])
-            .replace("{date}", DATE))
+            .replace("{date}", DATE)
+            .replace("{token_expires}",
+                     f',\n  "token_expires_on": "{expires}"' if expires else ""))
 
 
 def render(hub):
@@ -730,6 +828,9 @@ def render(hub):
         open_items = ("- Obtain access: " + ", ".join(hub.get("auth", [])) + " are not configured.\n"
                       "- Move status to `partial` after the first successful `-Live` run.")
     eval_rows = "\n".join(eval_rows_for(hub)) or "| - | - | - | - |"
+    extra = "".join(
+        f"## {section['title']}\n\n{section['body']}\n\n"
+        for section in hub.get("extra_sections", []))
 
     files = {
         "README.md": README.format(
@@ -742,7 +843,8 @@ def render(hub):
             auth_list=auth_list or "_(none)_",
             auth_notes=hub.get("auth_notes", ""),
             verify_note=hub.get("verify_note", ""),
-            endpoints=endpoints, limits=limits, gotchas=gotchas, consumers=consumers),
+            endpoints=endpoints, limits=limits, gotchas=gotchas, consumers=consumers,
+            extra=extra),
         "FAILURES.md": FAILURES.format(
             title=hub["title"], rows=fail_rows, unknown=unknown),
         "AGENTS.md": AGENTS.format(
@@ -759,6 +861,7 @@ def render(hub):
         os.path.join("scripts", "verify.ps1"): render_verify(hub),
         os.path.join("scripts", "selfcheck.ps1"): SELFCHECK.replace("{slug}", hub["slug"]),
         "state.json": render_state(hub),
+        os.path.join(".github", "workflows", "gate.yml"): GATE_WORKFLOW,
         os.path.join(".memory", "project_brief.md"): BRIEF.format(
             dir=hub["dir"], service=hub["service"], consumers=consumers,
             status=hub["status"], mode=hub["mode"]),

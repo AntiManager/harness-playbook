@@ -728,8 +728,9 @@
       "slug": "yandex-webmaster",
       "title": "Yandex Webmaster",
       "service": "Yandex Webmaster API v4.1",
-      "status": "blocked",
+      "status": "partial",
       "contract_version": 1,
+      "token_expires_on": "2027-05-17",
       "mode": "read (+ verification and recrawl, gated)",
       "summary": "Index status, search queries, sitemaps, diagnostics, SQI history, important URLs, verification and recrawl for a site verified in Yandex Webmaster.",
       "consumers": [
@@ -759,7 +760,10 @@
         "Recrawl has a per-host daily quota exposed at /recrawl/quota/",
         "Indexing and query statistics update daily, not in real time",
         "Popular queries return a top-500 slice per date, not the full query log",
-        "All payloads are UTF-8; XML only with Accept: application/xml"
+        "All payloads are UTF-8; XML only with Accept: application/xml",
+        "Query statistics take date_from and date_to in YYYY-MM-DD; without them the period defaults to the last week",
+        "limit and offset page the query lists; the response echoes count (returned rows), date_from and date_to",
+        "On 429 back off exponentially and cap concurrency; the API does not document a Retry-After contract, so do not depend on the header"
       ],
       "gotchas": [
         "host_id is a stable string like https:example.com:443, not the site URL; take it from the hosts list",
@@ -767,7 +771,19 @@
         "404 on a host resource means the host is not added to this account",
         "POST /verification/ starts a check and returns a task; it does not verify instantly",
         "The token expires in 6 months; 401 means re-issue, there is no refresh",
-        "401 without a token is expected; the API always needs one"
+        "401 without a token is expected; the API always needs one",
+        "search-queries/popular requires order_by and query_indicator; a missing one returns HTTP 400 FIELD_VALIDATION_ERROR, not 404",
+        "summary.sqi = 0 is a real value, not an error; check the field is present rather than truthy"
+      ],
+      "extra_sections": [
+        {
+          "title": "Response fields observed on live data (2026-11-18)",
+          "body": "| Resource | Shape |\n|---|---|\n| `GET /v4/user/{user-id}/hosts/` | `{count, hosts: [{host_id, unicode_host_url, verified}]}` |\n| `GET .../summary/` | `{sqi, searchable_pages_count, excluded_pages_count, site_problems}` — `sqi` is an integer and `0` is valid |\n| `GET .../diagnostics/` | `{problems: {<CODE>: {severity, state, last_state_update}}}`; `severity` is `FATAL`, `CRITICAL`, `POSSIBLE_PROBLEM` or `RECOMMENDATION`; `state` is `PRESENT`, `ABSENT` or `UNDEFINED` |\n| `GET .../search-queries/popular/` | `{count, queries: [{query_id, query_text, indicators: {<QUERY_INDICATOR>: number}}], date_from, date_to}` |\n\nObserved diagnostic codes include `NO_REGIONS`, `NOT_IN_SPRAV`, `NO_METRIKA_COUNTER_CRAWL_ENABLED` (all `PRESENT` on `https:antimanager.pro:443`). Treat unknown codes as forward-compatible: read `severity` and `state`, do not whitelist codes."
+        },
+        {
+          "title": "Query statistics parameters",
+          "body": "- `order_by` (required) and `query_indicator` (required) select the ranking indicator.\n- `date_from` and `date_to` are `YYYY-MM-DD`; omitted means the last week.\n- `limit` and `offset` page the result; `count` is the number of rows returned, not the total.\n- `search-queries/all/history/` returns the same indicators per date without `order_by`."
+        }
       ],
       "failures": [
         [
@@ -793,33 +809,55 @@
           "per-app quota exceeded",
           "back off and reduce the request rate",
           "-"
+        ],
+        [
+          "400 FIELD_VALIDATION_ERROR",
+          "a required parameter is missing (observed: order_by on search-queries/popular)",
+          "read error_message and send the required parameter; this is a request bug, not a quota or auth problem",
+          "2026-11-18: GET .../search-queries/popular/?limit=2 returned 400 field_name=order_by"
         ]
+      ],
+      "open_items": [
+        "Token rotation is manual every ~6 months (no refresh flow); state.json carries token_expires_on and selfcheck warns at 30 days.",
+        "Promote to `live` once a consumer call path (AntiManager or exhomebird) is exercised on real data and recorded with a commit sha.",
+        "Record the real per-app quota and 429 behaviour on the first observed 429.",
+        "Consumers still reimplement user_id/host_id lookup plus 401 and 429 handling; extract a shared helper once a second consumer needs it."
       ],
       "refs": [
         "https://yandex.ru/dev/webmaster/doc/ru/concepts/getting-started.md (resource table)",
         "https://yandex.ru/dev/webmaster/doc/ru/tasks/how-to-get-oauth.md (scopes and 6-month token)"
       ],
-      "smoke": "$token = Get-HubEnv 'YANDEX_WEBMASTER_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'OAuth ' + $token }\n$u = Invoke-RestMethod -Uri 'https://api.webmaster.yandex.net/v4/user/' -Headers $h -TimeoutSec 20\n$hostList = Invoke-RestMethod -Uri ('https://api.webmaster.yandex.net/v4/user/' + $u.user_id + '/hosts/') -Headers $h -TimeoutSec 20\n'webmaster user ' + $u.user_id + ' hosts ' + @($hostList.hosts).Count",
+      "smoke": "$token = Get-HubEnv 'YANDEX_WEBMASTER_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'OAuth ' + $token }\n$u = Invoke-RestMethod -Uri 'https://api.webmaster.yandex.net/v4/user/' -Headers $h -TimeoutSec 20\n$hosts = @((Invoke-RestMethod -Uri ('https://api.webmaster.yandex.net/v4/user/' + $u.user_id + '/hosts/') -Headers $h -TimeoutSec 20).hosts)\nif ($hosts.Count -lt 1) { throw 'no hosts for this account' }\n$primary = @($hosts | Where-Object { $_.host_id -like 'https:*' })[0]\nif (-not $primary) { $primary = $hosts[0] }\n$hostId = $primary.host_id\n$summary = Invoke-RestMethod -Uri ('https://api.webmaster.yandex.net/v4/user/' + $u.user_id + '/hosts/' + $hostId + '/summary/') -Headers $h -TimeoutSec 20\nif ($null -eq $summary.sqi) { throw ('summary has no sqi for ' + $hostId) }\n'webmaster user ' + $u.user_id + ' hosts ' + $hosts.Count + ' summary ' + $hostId + ' sqi=' + $summary.sqi + ' pages=' + $summary.searchable_pages_count",
       "eval_rows": [
         {
-          "task": "`-Offline` exits 0 and prints `READY: blocked (missing: YANDEX_WEBMASTER_TOKEN)`",
+          "task": "`-Offline` with a configured token exits 0 and prints `READY: yes`",
           "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Offline`",
-          "expected": "exit 0"
+          "expected": "exit 0 and `READY: yes`"
         },
         {
-          "task": "`-Live` without env exits 2 without a network call",
-          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live`",
+          "task": "`-Offline -EnvSource Process` without a process token prints `READY: blocked` (negative path)",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Offline -EnvSource Process`",
+          "expected": "exit 0 and `READY: blocked (missing: YANDEX_WEBMASTER_TOKEN)`"
+        },
+        {
+          "task": "`-Live -EnvSource Process` without a process token exits 2 without a network call",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live -EnvSource Process`",
           "expected": "exit 2 and `STATUS: BLOCKED`"
         },
         {
-          "task": "with a token, `-Live` prints `EVIDENCE:` with the user_id and the host count",
+          "task": "with a token, `-Live` prints `EVIDENCE:` with user_id, host count and a summary `sqi`",
           "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live`",
           "expected": "exit 0 and `STATUS: OK (live)`"
         },
         {
-          "task": "harness invariants hold: contract version, README status and registry status match state.json",
+          "task": "harness invariants hold: contract version, status, dates, token expiry and registry sync",
           "grader": "`pwsh -NoProfile -File scripts/selfcheck.ps1`",
-          "expected": "exit 0 and `SELFCHECK: OK (9 checks)`"
+          "expected": "exit 0 and `SELFCHECK: OK`"
+        },
+        {
+          "task": "a planted `Authorization: OAuth y0_...` value fails the secret scan (not runnable in place)",
+          "grader": "- (not runnable)",
+          "expected": "n/a"
         }
       ]
     },
