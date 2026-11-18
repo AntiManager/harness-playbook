@@ -729,6 +729,7 @@
       "title": "Yandex Webmaster",
       "service": "Yandex Webmaster API v4.1",
       "status": "blocked",
+      "contract_version": 1,
       "mode": "read (+ verification and recrawl, gated)",
       "summary": "Index status, search queries, sitemaps, diagnostics, SQI history, important URLs, verification and recrawl for a site verified in Yandex Webmaster.",
       "consumers": [
@@ -798,11 +799,28 @@
         "https://yandex.ru/dev/webmaster/doc/ru/concepts/getting-started.md (resource table)",
         "https://yandex.ru/dev/webmaster/doc/ru/tasks/how-to-get-oauth.md (scopes and 6-month token)"
       ],
-      "smoke": "$token = Get-HubEnv 'YANDEX_WEBMASTER_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'OAuth ' + $token }\n$u = Invoke-RestMethod -Uri 'https://api.webmaster.yandex.net/v4/user/' -Headers $h -TimeoutSec 20\n$hosts = Invoke-RestMethod -Uri ('https://api.webmaster.yandex.net/v4/user/' + $u.user_id + '/hosts/') -Headers $h -TimeoutSec 20\n'webmaster user ' + $u.user_id + ' hosts ' + $hosts.count",
-      "evals": [
-        "verify.ps1 -Offline exits 0 and prints READY: blocked (missing: YANDEX_WEBMASTER_TOKEN)",
-        "verify.ps1 -Live without env exits 2 without a network call",
-        "with a token, -Live prints the user_id and the host count"
+      "smoke": "$token = Get-HubEnv 'YANDEX_WEBMASTER_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'OAuth ' + $token }\n$u = Invoke-RestMethod -Uri 'https://api.webmaster.yandex.net/v4/user/' -Headers $h -TimeoutSec 20\n$hostList = Invoke-RestMethod -Uri ('https://api.webmaster.yandex.net/v4/user/' + $u.user_id + '/hosts/') -Headers $h -TimeoutSec 20\n'webmaster user ' + $u.user_id + ' hosts ' + @($hostList.hosts).Count",
+      "eval_rows": [
+        {
+          "task": "`-Offline` exits 0 and prints `READY: blocked (missing: YANDEX_WEBMASTER_TOKEN)`",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Offline`",
+          "expected": "exit 0"
+        },
+        {
+          "task": "`-Live` without env exits 2 without a network call",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live`",
+          "expected": "exit 2 and `STATUS: BLOCKED`"
+        },
+        {
+          "task": "with a token, `-Live` prints `EVIDENCE:` with the user_id and the host count",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live`",
+          "expected": "exit 0 and `STATUS: OK (live)`"
+        },
+        {
+          "task": "harness invariants hold: contract version, README status and registry status match state.json",
+          "grader": "`pwsh -NoProfile -File scripts/selfcheck.ps1`",
+          "expected": "exit 0 and `SELFCHECK: OK (9 checks)`"
+        }
       ]
     },
     {

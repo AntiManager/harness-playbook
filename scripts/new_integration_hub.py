@@ -231,7 +231,9 @@ HARNESS = """# Harness provenance — {dir}
 - Command: `pwsh -NoProfile -File scripts/verify.ps1 -Offline`
 - Success: exit 0, `STATUS: OK (offline)`, and a `READY:` line
 - Scope: required files, boot trio, `state.json`, skill file, env presence; `selfcheck.ps1` adds
-  autoload, skill frontmatter, failure-matrix, secret-pattern and encoding checks
+  autoload, skill frontmatter, failure-matrix, secret-pattern, encoding and
+  contract/README/registry sync checks (the registry is read from `HARNESS_REGISTRY` or the
+  sibling `harness-playbook` checkout, so selfcheck needs that checkout)
 - Not covered: service availability and credentials — `READY:` only shows env presence; use
   `-Live` to prove access
 - Full gate: `verify.ps1 -Live` plus the consumer project's own tests
@@ -371,7 +373,10 @@ if ($missingEnv.Count -gt 0) {
     exit 2
 }
 try {
+    $evidence = @(& {
 {smoke}
+    }) -join ' '
+    Write-Output ('EVIDENCE: ' + $evidence)
     Write-Output 'STATUS: OK (live)'
     exit 0
 } catch {
@@ -572,7 +577,66 @@ if ($state) {
     if (($state.contract_version -as [int]) -lt 1) { Add-Fail 'state.json contract_version is not a positive integer' }
 }
 
-$checks = 6
+# 7. contract header sync: CONTRACT.md version and status vs state.json
+$contractPath = Join-Path $root 'CONTRACT.md'
+if (-not (Test-Path -LiteralPath $contractPath)) {
+    Add-Fail 'CONTRACT.md is missing'
+} else {
+    $contractText = Get-Content -LiteralPath $contractPath -Raw
+    if ($contractText -notmatch 'Version:\\s*(\\d+)') {
+        Add-Fail 'CONTRACT.md has no Version line'
+    } elseif ($state -and (($Matches[1] -as [int]) -ne ($state.contract_version -as [int]))) {
+        Add-Fail ('CONTRACT.md Version ' + $Matches[1] + ' != state.json contract_version ' + $state.contract_version)
+    }
+    if ($contractText -notmatch 'status:\\s*\\*\\*(\\w+)\\*\\*') {
+        Add-Fail 'CONTRACT.md has no bold status token'
+    } elseif ($state -and $Matches[1] -ne $state.status) {
+        Add-Fail ('CONTRACT.md status ' + $Matches[1] + ' != state.json status ' + $state.status)
+    }
+}
+
+# 8. README status line sync
+$readmePath = Join-Path $root 'README.md'
+if (-not (Test-Path -LiteralPath $readmePath)) {
+    Add-Fail 'README.md is missing'
+} else {
+    $readmeText = Get-Content -LiteralPath $readmePath -Raw
+    if ($readmeText -notmatch 'Status:\\s*\\*\\*(\\w+)\\*\\*') {
+        Add-Fail 'README.md has no bold status token'
+    } elseif ($state -and $Matches[1] -ne $state.status) {
+        Add-Fail ('README.md status ' + $Matches[1] + ' != state.json status ' + $state.status)
+    }
+}
+
+# 9. registry sync: the hub entry exists and matches state.json
+$registryPath = $env:HARNESS_REGISTRY
+if (-not $registryPath) {
+    $registryPath = Join-Path (Split-Path -Parent $root) 'harness-playbook\\inventory\\integrations.json'
+}
+if (-not (Test-Path -LiteralPath $registryPath)) {
+    Add-Fail ('registry not found: ' + $registryPath)
+} else {
+    $registry = $null
+    try { $registry = Get-Content -LiteralPath $registryPath -Raw | ConvertFrom-Json }
+    catch { Add-Fail 'registry is not valid JSON' }
+    if ($registry) {
+        $entry = @($registry.hubs | Where-Object { $_.slug -eq '{slug}' })
+        if ($entry.Count -ne 1) {
+            Add-Fail ('registry has ' + $entry.Count + ' entries for slug {slug}')
+        } elseif ($state) {
+            if ($entry[0].status -ne $state.status) {
+                Add-Fail ('registry status ' + $entry[0].status + ' != state.json status ' + $state.status)
+            }
+            $registryVersion = 1
+            if ($entry[0].contract_version) { $registryVersion = $entry[0].contract_version -as [int] }
+            if ($registryVersion -ne ($state.contract_version -as [int])) {
+                Add-Fail ('registry contract_version ' + $registryVersion + ' != state.json contract_version ' + $state.contract_version)
+            }
+        }
+    }
+}
+
+$checks = 9
 if ($fail.Count -gt 0) {
     $fail | ForEach-Object { Write-Output ('SELFCHECK: FAIL ' + $_) }
     exit 1
@@ -630,7 +694,8 @@ def eval_row(index, task):
     if "not runnable" in lowered or "without confirm" in lowered:
         return f"| {index} | {task} | - (not runnable) | n/a |"
     mode = "-Live" if "-Live" in task else "-Offline"
-    return f"| {index} | {task} | `scripts/verify.ps1 {mode}` | exit 0 |"
+    expected = "exit 2" if ("exits 2" in lowered or "exit 2" in lowered) else "exit 0"
+    return f"| {index} | {task} | `scripts/verify.ps1 {mode}` | {expected} |"
 
 
 def eval_rows_for(hub):
