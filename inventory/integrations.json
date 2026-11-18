@@ -729,7 +729,7 @@
       "title": "Yandex Webmaster",
       "service": "Yandex Webmaster API v4.1",
       "status": "partial",
-      "contract_version": 1,
+      "contract_version": 2,
       "token_expires_on": "2027-05-17",
       "mode": "read (+ verification and recrawl, gated)",
       "summary": "Index status, search queries, sitemaps, diagnostics, SQI history, important URLs, verification and recrawl for a site verified in Yandex Webmaster.",
@@ -763,6 +763,7 @@
         "All payloads are UTF-8; XML only with Accept: application/xml",
         "Query statistics take date_from and date_to in YYYY-MM-DD; without them the period defaults to the last week",
         "limit and offset page the query lists; the response echoes count (returned rows), date_from and date_to",
+        "The echoed date_to can be earlier than the requested one: it is the last day with statistics, so read the echo instead of the request",
         "On 429 back off exponentially and cap concurrency; the API does not document a Retry-After contract, so do not depend on the header"
       ],
       "gotchas": [
@@ -773,12 +774,17 @@
         "The token expires in 6 months; 401 means re-issue, there is no refresh",
         "401 without a token is expected; the API always needs one",
         "search-queries/popular requires order_by and query_indicator; a missing one returns HTTP 400 FIELD_VALIDATION_ERROR, not 404",
-        "summary.sqi = 0 is a real value, not an error; check the field is present rather than truthy"
+        "summary.sqi = 0 is a real value, not an error; check the field is present rather than truthy",
+        "The hosts list is {hosts: [...]} with no count field; use the array length (in PowerShell `@($response.hosts).Count`, because `.count` on a PSObject returns 1)",
+        "Each host carries main_mirror: an object pointing at the main mirror for a secondary host, null for the main host itself",
+        "sqi-history can be empty (points: []) while summary returns sqi = 0; do not treat an empty history as a request error",
+        "search-queries/popular silently clamps date_to to the last day with statistics; a later requested date returns count 0 with the older echoed date_to",
+        "indexing/history returns crawl-event timestamps per HTTP class, not a daily series, and {indicators: {}} when the window has no events"
       ],
       "extra_sections": [
         {
           "title": "Response fields observed on live data (2026-11-18)",
-          "body": "| Resource | Shape |\n|---|---|\n| `GET /v4/user/{user-id}/hosts/` | `{count, hosts: [{host_id, unicode_host_url, verified}]}` |\n| `GET .../summary/` | `{sqi, searchable_pages_count, excluded_pages_count, site_problems}` — `sqi` is an integer and `0` is valid |\n| `GET .../diagnostics/` | `{problems: {<CODE>: {severity, state, last_state_update}}}`; `severity` is `FATAL`, `CRITICAL`, `POSSIBLE_PROBLEM` or `RECOMMENDATION`; `state` is `PRESENT`, `ABSENT` or `UNDEFINED` |\n| `GET .../search-queries/popular/` | `{count, queries: [{query_id, query_text, indicators: {<QUERY_INDICATOR>: number}}], date_from, date_to}` |\n\nObserved diagnostic codes include `NO_REGIONS`, `NOT_IN_SPRAV`, `NO_METRIKA_COUNTER_CRAWL_ENABLED` (all `PRESENT` on `https:antimanager.pro:443`). Treat unknown codes as forward-compatible: read `severity` and `state`, do not whitelist codes."
+          "body": "| Resource | Shape |\n|---|---|\n| `GET /v4/user/{user-id}/hosts/` | `{hosts: [{host_id, ascii_host_url, unicode_host_url, verified, main_mirror}]}` — **no `count` field**; `main_mirror` is an object for a secondary mirror and `null` for the main host |\n| `GET .../summary/` | `{sqi, searchable_pages_count, excluded_pages_count, site_problems}` — `sqi` is an integer and `0` is valid |\n| `GET .../diagnostics/` | `{problems: {<CODE>: {severity, state, last_state_update}}}`; `severity` is `FATAL`, `CRITICAL`, `POSSIBLE_PROBLEM` or `RECOMMENDATION`; `state` is `PRESENT`, `ABSENT`, `NOT_APPLICABLE` or `UNDEFINED` |\n| `GET .../indexing/history/` | `{indicators: {HTTP_2XX: [{date, value}], HTTP_3XX: [...], HTTP_4XX: [...]}}` — crawl-event timestamps, `{}` when the window has no events |\n| `GET .../sqi-history/` | `{points: [{date, value}]}` — daily; can be empty |\n| `GET .../search-queries/popular/` | `{count, queries: [{query_id, query_text, indicators: {<QUERY_INDICATOR>: number}}], date_from, date_to}` |\n| `GET .../sitemaps/` | `{sitemaps: [{sitemap_id, sitemap_url, last_access_date, errors_count, urls_count, children_count, sources, sitemap_type}]}` — includes sitemaps found via `robots.txt` |\n| `GET .../user-added-sitemaps/` | `{sitemaps: [...], count}` — only sitemaps added by the user; the list can be empty while `/sitemaps/` is not |\n| `GET .../important-urls/` | `{urls: [{url, update_date, change_indicators, indexing_status, search_status}]}` |\n| `GET .../recrawl/quota/` | `{daily_quota, quota_remainder}` |\n\nObserved diagnostic codes include `NO_REGIONS`, `NOT_IN_SPRAV`, `NO_METRIKA_COUNTER_CRAWL_ENABLED` (all `PRESENT` on `https:antimanager.pro:443`), `NO_METRIKA_COUNTER_BINDING` and `DOCUMENTS_MISSING_DESCRIPTION` (`PRESENT` on `https:exhomebird.ru:443`). Treat unknown codes as forward-compatible: read `severity` and `state`, do not whitelist codes."
         },
         {
           "title": "Query statistics parameters",
@@ -815,6 +821,24 @@
           "a required parameter is missing (observed: order_by on search-queries/popular)",
           "read error_message and send the required parameter; this is a request bug, not a quota or auth problem",
           "2026-11-18: GET .../search-queries/popular/?limit=2 returned 400 field_name=order_by"
+        ],
+        [
+          "Host count comes out as 1 for an account with several hosts",
+          "the hosts response has no count field and PowerShell returns 1 for `.count` on a single PSObject",
+          "use `@($response.hosts).Count`; never read `.count` from the hosts response",
+          "2026-11-18: hosts returned 3 verified hosts, response body had no count field"
+        ],
+        [
+          "Query statistics window ends earlier than requested",
+          "the API clamps date_to to the last day with statistics",
+          "read the echoed date_from/date_to as authoritative; a later date yields count 0, not an error",
+          "2026-11-18: requested date_from=2026-11-01&date_to=2026-11-18, echoed date_to=2026-10-07, count=0"
+        ],
+        [
+          "sqi-history is empty while summary reports sqi = 0",
+          "the host has no SQI history points; an empty history is a valid answer",
+          "read summary.sqi for the current value and treat points: [] as no history, not a failure",
+          "2026-11-18: https:antimanager.pro:443 sqi-history points=[] with summary sqi=0"
         ]
       ],
       "open_items": [
