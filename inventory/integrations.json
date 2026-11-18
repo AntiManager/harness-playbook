@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-11-17",
+  "updated": "2026-11-18",
   "statuses": [
     "live",
     "partial",
@@ -721,6 +721,335 @@
         "verify.ps1 -Live returns the bot username",
         "an oversized or unescaped message is rejected before the HTTP call"
       ]
+    },
+    {
+      "key": "yandex-webmaster",
+      "dir": "integration-yandex-webmaster",
+      "slug": "yandex-webmaster",
+      "title": "Yandex Webmaster",
+      "service": "Yandex Webmaster API v4.1",
+      "status": "blocked",
+      "mode": "read (+ verification and recrawl, gated)",
+      "summary": "Index status, search queries, sitemaps, diagnostics, SQI history, important URLs, verification and recrawl for a site verified in Yandex Webmaster.",
+      "consumers": [
+        "AntiManager: SEO focus, verification meta tag already shipped",
+        "exhomebird: SEO and index monitoring (planned)",
+        "linear-tech: SEO and index monitoring (planned)"
+      ],
+      "auth": [
+        "YANDEX_WEBMASTER_TOKEN"
+      ],
+      "auth_notes": "OAuth app at oauth.yandex.ru with redirect https://oauth.yandex.ru/verification_code and scopes webmaster:hostinfo plus webmaster:verify. The token lives 6 months and has no refresh flow: rotation is manual. It must belong to the account that verified the host. Header: Authorization: OAuth <token>.",
+      "endpoints": [
+        "https://api.webmaster.yandex.net/v4/user/ (numeric user_id)",
+        "GET /v4/user/{user-id}/hosts/ (list; POST adds a host)",
+        "GET /v4/user/{user-id}/hosts/{host-id}/summary/",
+        "GET /v4/user/{user-id}/hosts/{host-id}/indexing/history/",
+        "GET /v4/user/{user-id}/hosts/{host-id}/search-queries/popular/",
+        "GET /v4/user/{user-id}/hosts/{host-id}/search-queries/all/history/",
+        "GET /v4/user/{user-id}/hosts/{host-id}/sitemaps/ and /user-added-sitemaps/",
+        "GET /v4/user/{user-id}/hosts/{host-id}/diagnostics/",
+        "GET /v4/user/{user-id}/hosts/{host-id}/verification/ (POST starts a check)",
+        "GET /v4/user/{user-id}/hosts/{host-id}/recrawl/queue/ and /recrawl/quota/",
+        "GET /v4/user/{user-id}/hosts/{host-id}/sqi-history/ and /important-urls/"
+      ],
+      "limits": [
+        "Per-app request quotas; HTTP 429 when exceeded",
+        "Recrawl has a per-host daily quota exposed at /recrawl/quota/",
+        "Indexing and query statistics update daily, not in real time",
+        "Popular queries return a top-500 slice per date, not the full query log",
+        "All payloads are UTF-8; XML only with Accept: application/xml"
+      ],
+      "gotchas": [
+        "host_id is a stable string like https:example.com:443, not the site URL; take it from the hosts list",
+        "user_id is numeric and differs from the Yandex login",
+        "404 on a host resource means the host is not added to this account",
+        "POST /verification/ starts a check and returns a task; it does not verify instantly",
+        "The token expires in 6 months; 401 means re-issue, there is no refresh",
+        "401 without a token is expected; the API always needs one"
+      ],
+      "failures": [
+        [
+          "401 Unauthorized",
+          "token expired (6 months) or issued for another account",
+          "re-issue the OAuth token, update User env YANDEX_WEBMASTER_TOKEN, rerun verify -Live",
+          "-"
+        ],
+        [
+          "404 on a host resource",
+          "host not added or not verified for this account",
+          "add the host in the Webmaster UI or via POST /hosts/ and verify it",
+          "-"
+        ],
+        [
+          "403 on verification or recrawl",
+          "token lacks webmaster:verify",
+          "re-issue the token with both webmaster:hostinfo and webmaster:verify",
+          "-"
+        ],
+        [
+          "429 Too Many Requests",
+          "per-app quota exceeded",
+          "back off and reduce the request rate",
+          "-"
+        ]
+      ],
+      "refs": [
+        "https://yandex.ru/dev/webmaster/doc/ru/concepts/getting-started.md (resource table)",
+        "https://yandex.ru/dev/webmaster/doc/ru/tasks/how-to-get-oauth.md (scopes and 6-month token)"
+      ],
+      "smoke": "$token = Get-HubEnv 'YANDEX_WEBMASTER_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'OAuth ' + $token }\n$u = Invoke-RestMethod -Uri 'https://api.webmaster.yandex.net/v4/user/' -Headers $h -TimeoutSec 20\n$hosts = Invoke-RestMethod -Uri ('https://api.webmaster.yandex.net/v4/user/' + $u.user_id + '/hosts/') -Headers $h -TimeoutSec 20\n'webmaster user ' + $u.user_id + ' hosts ' + $hosts.count",
+      "evals": [
+        "verify.ps1 -Offline exits 0 and prints READY: blocked (missing: YANDEX_WEBMASTER_TOKEN)",
+        "verify.ps1 -Live without env exits 2 without a network call",
+        "with a token, -Live prints the user_id and the host count"
+      ]
+    },
+    {
+      "key": "yandex-disk",
+      "dir": "integration-yandex-disk",
+      "slug": "yandex-disk",
+      "title": "Yandex Disk",
+      "service": "Yandex Disk REST API v1",
+      "status": "blocked",
+      "mode": "read + write (gated)",
+      "summary": "File storage over the Disk REST API: metadata, listing, upload and download by temporary href, copy, move, delete, publish and trash. App-folder access is the default least-privilege mode.",
+      "consumers": [
+        "exhomebird: media archive (planned)",
+        "Proc_library: exports and backups (planned)",
+        "factory-system: generated reports (planned)"
+      ],
+      "auth": [
+        "YANDEX_DISK_TOKEN"
+      ],
+      "auth_notes": "OAuth app at oauth.yandex.ru. Scopes: cloud_api:disk.read, cloud_api:disk.write, cloud_api:disk.info and cloud_api:disk.app_folder. Prefer the app-folder scope: the token is then limited to the dedicated app folder (disk:/Приложения/<app> in the Russian UI) and cannot read the rest of the disk. Header: Authorization: OAuth <token>; Accept and Content-Type must be application/json.",
+      "endpoints": [
+        "GET https://cloud-api.yandex.net/v1/disk/ (disk metadata)",
+        "GET /v1/disk/resources?path= (metadata and listing)",
+        "GET /v1/disk/resources/upload?path=&overwrite= then PUT the file to the returned href",
+        "GET /v1/disk/resources/download?path= then GET the returned href",
+        "PUT /v1/disk/resources?from=&path= (copy) and POST /v1/disk/resources/move?from=&path=",
+        "DELETE /v1/disk/resources?path=&permanently=",
+        "PUT /v1/disk/resources/publish and /unpublish",
+        "GET /v1/disk/trash/resources and DELETE /v1/disk/trash/resources",
+        "GET /v1/disk/resources/last-uploaded"
+      ],
+      "limits": [
+        "API requests are rate-limited; HTTP 429 on exceed",
+        "Upload and download links are temporary; request a fresh href per transfer",
+        "Long operations return 202 with a link to the operation status",
+        "The app-folder scope changes the root: only the app folder is visible"
+      ],
+      "gotchas": [
+        "A write to an existing path returns 409 unless overwrite=true",
+        "Paths are disk:/foo and /foo; both mean the same node",
+        "An app-folder token cannot list the rest of the disk, which is expected",
+        "Public links are separate from file access and can be revoked",
+        "Deleting without permanently=true leaves the node in the trash"
+      ],
+      "failures": [
+        [
+          "401 Unauthorized",
+          "token expired or revoked",
+          "re-issue the Disk OAuth token, update User env YANDEX_DISK_TOKEN",
+          "-"
+        ],
+        [
+          "404 Not Found",
+          "wrong path or the app folder was not created yet",
+          "create the app folder or fix the path",
+          "-"
+        ],
+        [
+          "409 Conflict",
+          "target path exists without overwrite=true",
+          "set overwrite=true or choose another path",
+          "-"
+        ],
+        [
+          "202 with no file yet",
+          "asynchronous operation",
+          "poll the operation href until it reports success",
+          "-"
+        ]
+      ],
+      "refs": [
+        "https://yandex.ru/dev/disk/api/concepts/quickstart.html (scopes and header)",
+        "https://yandex.ru/dev/disk/api/reference/ (REST reference)"
+      ],
+      "smoke": "$token = Get-HubEnv 'YANDEX_DISK_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'OAuth ' + $token; Accept = 'application/json' }\n$d = Invoke-RestMethod -Uri 'https://cloud-api.yandex.net/v1/disk/' -Headers $h -TimeoutSec 20\n'disk total ' + $d.total_space + ' used ' + $d.used_space",
+      "evals": [
+        "verify.ps1 -Offline exits 0 and prints READY: blocked (missing: YANDEX_DISK_TOKEN)",
+        "verify.ps1 -Live without env exits 2 without a network call",
+        "with a token, -Live prints total and used space"
+      ]
+    },
+    {
+      "key": "yandex-mail",
+      "dir": "integration-yandex-mail",
+      "slug": "yandex-mail",
+      "title": "Yandex Mail (IMAP/SMTP)",
+      "service": "Yandex Mail mailbox over IMAP and SMTP",
+      "status": "blocked",
+      "mode": "read + send",
+      "summary": "A real Yandex mailbox: IMAP folder sync and search plus SMTP send with an app password. Transactional sending through Yandex Cloud Postbox stays in integration-email; this hub owns mailbox access.",
+      "consumers": [
+        "AntiManager: feedback mailbox (planned)",
+        "Proc_library: notification mailbox (planned)",
+        "Personal automation (planned)"
+      ],
+      "auth": [
+        "YANDEX_MAIL_USER",
+        "YANDEX_MAIL_APP_PASSWORD"
+      ],
+      "auth_notes": "Create an app password at passport.yandex.ru/security/app-passwords (shown once). In the mailbox settings enable access from mail clients over IMAP and keep app passwords and OAuth tokens enabled. The login is the address part before @. Optional: YANDEX_MAIL_IMAP_HOST=imap.ya.ru outside Russia, YANDEX_MAIL_OAUTH_TOKEN when the client supports XOAUTH2.",
+      "endpoints": [
+        "IMAP imap.yandex.ru:993 SSL (imap.ya.ru outside Russia)",
+        "SMTP smtp.yandex.ru:465 SSL or :587 STARTTLS",
+        "IMAP: LIST, SELECT, FETCH, SEARCH, IDLE; INBOX, Sent, Drafts, Trash, Spam and custom folders",
+        "SMTP: MAIL FROM, RCPT TO, DATA"
+      ],
+      "limits": [
+        "Per-mailbox sending limits apply; verify the current value in the mailbox settings",
+        "IMAP must be enabled per mailbox before the first login",
+        "POP3 is not supported by Yandex and must not be used",
+        "Attachment size is capped by the mailbox; check the current limit"
+      ],
+      "gotchas": [
+        "An app password is not the account password; accounts with 2FA must use an app password",
+        "Cyrillic folder names travel in modified UTF-7; decode them before matching",
+        "The Sent folder name differs by locale; resolve it by the special-use flag",
+        "Deduplicate messages by (UIDVALIDITY, UID), not by Message-ID alone",
+        "Do not send through a provider SMTP server from a Yandex address"
+      ],
+      "failures": [
+        [
+          "AUTHENTICATIONFAILED",
+          "app password wrong or revoked, or IMAP disabled",
+          "create a new app password, enable IMAP, update User env",
+          "-"
+        ],
+        [
+          "NO [AUTHENTICATIONFAILED] on SMTP",
+          "app password used as the account password",
+          "use the app password, not the account password",
+          "-"
+        ],
+        [
+          "Folder not found",
+          "Cyrillic name sent without UTF-7 encoding",
+          "use the modified UTF-7 name or the special-use flag",
+          "-"
+        ],
+        [
+          "Duplicates after resync",
+          "UID reuse after UIDVALIDITY change",
+          "store UIDVALIDITY with the UID and reset the local cache on change",
+          "-"
+        ]
+      ],
+      "refs": [
+        "https://yandex.ru/support/mail/mail-clients/others.html (IMAP/SMTP settings and app password)",
+        "Yandex Mail: enable IMAP in the mailbox settings before the first login"
+      ],
+      "smoke": "$user = Get-HubEnv 'YANDEX_MAIL_USER'\n$pass = Get-HubEnv 'YANDEX_MAIL_APP_PASSWORD'\nif (-not $user -or -not $pass) { throw 'no credentials' }\n$c = [System.Net.Sockets.TcpClient]::new()\n$c.Connect('imap.yandex.ru', 993)\n$c.ReceiveTimeout = 15000\n$ssl = [System.Net.Security.SslStream]::new($c.GetStream())\n$ssl.AuthenticateAsClient('imap.yandex.ru')\n$r = [System.IO.StreamReader]::new($ssl)\n$w = [System.IO.StreamWriter]::new($ssl)\n$w.AutoFlush = $true\n$greeting = $r.ReadLine()\n$w.WriteLine('a1 LOGIN ' + $user + ' ' + $pass)\n$resp = $r.ReadLine()\n$w.WriteLine('a2 LOGOUT')\n$c.Close()\nif ($resp -notmatch '^a1 OK') { throw ('login failed: ' + $resp) }\n'imap login ok'",
+      "evals": [
+        "verify.ps1 -Offline exits 0 and prints READY: blocked (missing: YANDEX_MAIL_USER, YANDEX_MAIL_APP_PASSWORD)",
+        "verify.ps1 -Live without env exits 2 without a network call",
+        "with credentials, -Live logs in over IMAP and prints imap login ok"
+      ]
+    },
+    {
+      "key": "google",
+      "dir": "integration-google",
+      "slug": "google",
+      "title": "Google APIs (OAuth 2.0)",
+      "service": "Google OAuth 2.0 with Search Console, Drive, Sheets and Cloud Translation",
+      "status": "blocked",
+      "mode": "read (+ OIDC sign-in later)",
+      "summary": "One OAuth 2.0 credential model for Google APIs. Primary scope is Google Search Console (sites, search analytics, sitemaps); Drive and Sheets are read-only options; Cloud Translation absorbs the former google-translate deferred entry. Gmail and restricted Drive scopes are out of scope until Google verification and a CASA assessment exist.",
+      "consumers": [
+        "AntiManager: Search Console API and SEO reporting (planned)",
+        "exhomebird and linear-tech: Search Console API (planned)",
+        "Excell_Translator: Cloud Translation v2 (planned migration)",
+        "Proc_library: Google sign-in via OIDC (later)"
+      ],
+      "auth": [
+        "GOOGLE_OAUTH_CLIENT_ID",
+        "GOOGLE_OAUTH_CLIENT_SECRET",
+        "GOOGLE_OAUTH_REFRESH_TOKEN"
+      ],
+      "auth_notes": "Google Cloud project, enable only the APIs in use, OAuth consent screen, installed-app flow with a loopback redirect on http://127.0.0.1:<port>. Store the refresh token in User env or _private, never in a repo. Optional GOOGLE_APPLICATION_CREDENTIALS for a service account and GOOGLE_PROJECT_ID for quota attribution. The oob redirect is removed; do not use it.",
+      "endpoints": [
+        "POST https://oauth2.googleapis.com/token (code and refresh exchange)",
+        "POST https://oauth2.googleapis.com/revoke",
+        "GET https://openidconnect.googleapis.com/v1/userinfo (OIDC)",
+        "GET https://www.googleapis.com/webmasters/v3/sites",
+        "POST https://www.googleapis.com/webmasters/v3/sites/{siteUrl}/searchAnalytics/query",
+        "PUT https://www.googleapis.com/webmasters/v3/sites/{siteUrl}/sitemaps/{feedpath}",
+        "GET https://www.googleapis.com/drive/v3/files (drive.file or drive.readonly)",
+        "GET https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{range}",
+        "POST https://translation.googleapis.com/language/translate/v2"
+      ],
+      "limits": [
+        "Search Analytics: 1200 QPM per site and per user; per-project 40000 QPM and 30000000 QPD",
+        "Search Analytics: at most 25000 rows per request, 16 months of history, 2-3 day data lag",
+        "URL inspection: 2000 QPD and 600 QPM per site",
+        "All other resources: 20 QPS and 200 QPM per user",
+        "Quotas are per Google Cloud project"
+      ],
+      "gotchas": [
+        "A consent screen in Testing issues a refresh token that expires in 7 days; publish the app or use a service account",
+        "Gmail and most Drive scopes are restricted: Google verification plus a CASA security assessment is required; do not start there",
+        "sc-domain:example.com and https://example.com/ are different siteUrl values",
+        "The oob redirect was removed; use a loopback redirect",
+        "A service account must be added as a user in Search Console before it can read a property",
+        "The Testing-mode 7-day expiry also breaks long-running scheduled jobs",
+        "Requests may need the local proxy; a timeout is not an auth error"
+      ],
+      "failures": [
+        [
+          "invalid_grant",
+          "refresh token expired, revoked, or hit the Testing-mode 7-day expiry",
+          "re-run the consent flow and update GOOGLE_OAUTH_REFRESH_TOKEN",
+          "-"
+        ],
+        [
+          "403 insufficientPermissions",
+          "scope missing or the account is not a property user",
+          "add the scope and the account to the Search Console property",
+          "-"
+        ],
+        [
+          "403 quotaExceeded",
+          "per-site or per-project quota",
+          "back off, narrow the date range and dimensions, retry after 15 minutes",
+          "-"
+        ],
+        [
+          "redirect_uri_mismatch",
+          "redirect URI not registered for the client",
+          "register the exact loopback URI in the OAuth client",
+          "-"
+        ],
+        [
+          "timeout or connection reset",
+          "network or proxy",
+          "check the local proxy and retry with backoff",
+          "-"
+        ]
+      ],
+      "refs": [
+        "https://developers.google.com/webmaster-tools/limits (quota table)",
+        "https://developers.google.com/identity/protocols/oauth2/native-app (loopback flow)",
+        "https://developers.google.com/webmaster-tools/v1/searchanalytics/query (query contract)"
+      ],
+      "smoke": "$id = Get-HubEnv 'GOOGLE_OAUTH_CLIENT_ID'\n$secret = Get-HubEnv 'GOOGLE_OAUTH_CLIENT_SECRET'\n$refresh = Get-HubEnv 'GOOGLE_OAUTH_REFRESH_TOKEN'\nif (-not $id -or -not $secret -or -not $refresh) { throw 'no credentials' }\n$body = @{ client_id = $id; client_secret = $secret; refresh_token = $refresh; grant_type = 'refresh_token' }\n$t = Invoke-RestMethod -Uri 'https://oauth2.googleapis.com/token' -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $body -TimeoutSec 30\n$h = @{ Authorization = 'Bearer ' + $t.access_token }\n$s = Invoke-RestMethod -Uri 'https://www.googleapis.com/webmasters/v3/sites' -Headers $h -TimeoutSec 30\n'sites: ' + $s.siteEntry.Count",
+      "evals": [
+        "verify.ps1 -Offline exits 0 and prints READY: blocked (missing: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_OAUTH_REFRESH_TOKEN)",
+        "verify.ps1 -Live without env exits 2 without a network call",
+        "with credentials, -Live exchanges the refresh token and prints the Search Console site count"
+      ]
     }
   ],
   "deferred": [
@@ -748,13 +1077,6 @@
       "consumers": [
         "Zakup",
         "linear-tech-bi"
-      ]
-    },
-    {
-      "key": "google-translate",
-      "reason": "Single consumer (Excell_Translator), no credentials, low reuse.",
-      "consumers": [
-        "Excell_Translator"
       ]
     },
     {
