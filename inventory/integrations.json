@@ -1051,9 +1051,9 @@
       "slug": "yandex-mail",
       "title": "Yandex Mail (IMAP/SMTP)",
       "service": "Yandex Mail mailbox over IMAP and SMTP",
-      "status": "blocked",
-      "mode": "read + send",
-      "summary": "A real Yandex mailbox: IMAP folder sync and search plus SMTP send with an app password. Transactional sending through Yandex Cloud Postbox stays in integration-email; this hub owns mailbox access.",
+      "status": "partial",
+      "mode": "read + send (send gated by --confirm-send)",
+      "summary": "A real Yandex mailbox: IMAP folder sync and search plus SMTP send with an app password. Send is a write gated behind the --confirm-send argument; transactional sending through Yandex Cloud Postbox stays in integration-email; this hub owns mailbox access.",
       "consumers": [
         "AntiManager: feedback mailbox (planned)",
         "Proc_library: notification mailbox (planned)",
@@ -1063,7 +1063,7 @@
         "YANDEX_MAIL_USER",
         "YANDEX_MAIL_APP_PASSWORD"
       ],
-      "auth_notes": "Create an app password at passport.yandex.ru/security/app-passwords (shown once). In the mailbox settings enable access from mail clients over IMAP and keep app passwords and OAuth tokens enabled. The login is the address part before @. Optional: YANDEX_MAIL_IMAP_HOST=imap.ya.ru outside Russia, YANDEX_MAIL_OAUTH_TOKEN when the client supports XOAUTH2.",
+      "auth_notes": "Create an app password at passport.yandex.ru/security/app-passwords (shown once). In the mailbox settings enable access from mail clients over IMAP and keep app passwords and OAuth tokens enabled. The login is the full mailbox address; scripts/send.py falls back to the part before @ if the server rejects that form. Optional: YANDEX_MAIL_IMAP_HOST=imap.ya.ru outside Russia, YANDEX_MAIL_OAUTH_TOKEN when the client supports XOAUTH2. Optional: YANDEX_MAIL_SMTP_HOST=smtp.yandex.ru and YANDEX_MAIL_SMTP_PORT=465 (port 587 switches to STARTTLS).",
       "endpoints": [
         "IMAP imap.yandex.ru:993 SSL (imap.ya.ru outside Russia)",
         "SMTP smtp.yandex.ru:465 SSL or :587 STARTTLS",
@@ -1074,14 +1074,21 @@
         "Per-mailbox sending limits apply; verify the current value in the mailbox settings",
         "IMAP must be enabled per mailbox before the first login",
         "POP3 is not supported by Yandex and must not be used",
-        "Attachment size is capped by the mailbox; check the current limit"
+        "Attachment size is capped by the mailbox; check the current limit",
+        "The From address must be the mailbox address or a verified alias; Yandex rejects a foreign sender",
+        "SMTP submission shares the per-mailbox sending limits; read the current value in the mailbox settings"
       ],
       "gotchas": [
         "An app password is not the account password; accounts with 2FA must use an app password",
         "Cyrillic folder names travel in modified UTF-7; decode them before matching",
         "The Sent folder name differs by locale; resolve it by the special-use flag",
         "Deduplicate messages by (UIDVALIDITY, UID), not by Message-ID alone",
-        "Do not send through a provider SMTP server from a Yandex address"
+        "Do not send through a provider SMTP server from a Yandex address",
+        "Send is a write: scripts/send.py prints `STATUS: REFUSED` (exit 3) unless `--confirm-send` is passed",
+        "SMTP AUTH accepts the full address and the part before @; send.py tries the address first and prints the accepted form",
+        "`verify.ps1 -Live` proves SMTP access with an AUTH-only dialogue and queues no message; delivery needs a real send",
+        "Yandex does not copy an SMTP-submitted message into Sent; only web and app sends are stored there",
+        "Server-side TEXT search does not match RFC 2047 subjects or base64 bodies, so a search for your own just-sent letter returns nothing"
       ],
       "failures": [
         [
@@ -1107,17 +1114,194 @@
           "UID reuse after UIDVALIDITY change",
           "store UIDVALIDITY with the UID and reset the local cache on change",
           "-"
+        ],
+        [
+          "`BAD Command syntax error` on LOGIN",
+          "credentials sent unquoted while containing IMAP specials (`\"`, `\\`, spaces, non-ASCII)",
+          "quote both arguments and escape `\\` and `\"` (`ConvertTo-ImapQuoted` in the smoke/`scripts/verify.ps1`)",
+          "live 2026-11-18"
+        ],
+        [
+          "`problems with connection` right after LOGIN on EXAMINE",
+          "transient server-side drop after several rapid logins",
+          "re-run the command once (read-only and safe); if it repeats, report the server-side issue",
+          "live 2026-11-18"
+        ],
+        [
+          "`login failed: * CAPABILITY ...` although login succeeded",
+          "the smoke read the first server line instead of the tagged `a1` response",
+          "read lines until one starts with the tag `a1 `",
+          "live 2026-11-18"
+        ],
+        [
+          "`535 5.7.8 Error: authentication failed` on SMTP AUTH",
+          "app password wrong or revoked, or access from mail clients is disabled in the mailbox settings",
+          "create a fresh app password, keep the IMAP/SMTP checkbox enabled, update User env",
+          "live 2026-11-18 (the IMAP checkbox blocked both protocols)"
+        ],
+        [
+          "SMTP AUTH result depends on the login form",
+          "some clients accept only the part before @, others only the full address",
+          "`scripts/send.py` tries the address first, then the local part, and prints the accepted form as `login=`",
+          "live 2026-11-18: the full address was accepted"
+        ],
+        [
+          "`STATUS: REFUSED` from `scripts/send.py`",
+          "the write is gated and `--confirm-send` is missing",
+          "add `--confirm-send` only after an explicit user decision",
+          "by design"
+        ],
+        [
+          "`STATUS: FAIL (refused recipients: ...)`",
+          "the server rejected a recipient address",
+          "read the address in the line; the message reached the other recipients only",
+          "-"
+        ],
+        [
+          "Message delivered but missing from the Sent folder",
+          "Yandex stores only web/app sends in Sent and does not copy SMTP submissions",
+          "append the message to Sent over IMAP when the thread matters, or accept the gap",
+          "live 2026-11-18: UID 6547 appeared in INBOX, Sent stayed at 7 messages"
+        ],
+        [
+          "`mailbox.py --search` returns 0 for a subject that exists",
+          "the subject travels RFC 2047 encoded and the body base64, so IMAP TEXT does not match the plain query",
+          "page with `--list` or search by FROM/DATE; decode headers client-side",
+          "live 2026-11-18: TEXT `integration-yandex-mail` matched 0 while INBOX UID 6547 carried it"
+        ],
+        [
+          "`Header values may not contain linefeed or carriage return characters`",
+          "`Header(...).encode()` folds with CRLF and smtplib rejects the folded value",
+          "use `Header(..., 'utf-8').encode(linesep='')` and keep the subject short",
+          "live 2026-11-18, scripts/send.py"
+        ],
+        [
+          "`'Header' object is not subscriptable`",
+          "a Header instance was assigned to a message header instead of its encoded string",
+          "assign `Header(...).encode(linesep='')`; a body with Cyrillic also needs `cte='base64'`",
+          "live 2026-11-18, scripts/send.py"
+        ],
+        [
+          "`mailbox.py --show` printed base64 or an empty preview",
+          "the script fetched `BODY[TEXT]` (MIME headers dropped) by message sequence, so a UID was passed where a sequence number is expected",
+          "fetch by UID with `BODY.PEEK[]`; a non-numeric or unknown UID is a FAIL, never an empty success",
+          "code review 2026-11-18, fixed in scripts/mailbox.py"
+        ],
+        [
+          "`send.py --check --body-file <missing>` failed instead of authenticating",
+          "`--check` is AUTH-only, but the body file was read before the check branch",
+          "resolve the body only on the delivery path (after `--confirm-send`)",
+          "code review 2026-11-18, fixed in scripts/send.py"
+        ],
+        [
+          "`organize.py --move` reported `moved=0` while the folder visibly held matching mail",
+          "`fetch_headers` takes IMAP **sequence numbers**, not UIDs; a UID set silently returns no rows",
+          "`SEARCH ALL` (sequence) → filter headers → `UID MOVE` with the real UID from the response meta",
+          "live 2026-11-18: INBOX held 11 `check.yandex.ru` receipts, `moved=0` on the first run"
+        ],
+        [
+          "`imaplib.IMAP4.abort: command: CAPABILITY => problems with connection` on a fresh connect",
+          "transient server-side drop during rapid reconnect loops (several moves in a row)",
+          "wait a few seconds and re-run the single command; the move is idempotent for unfiled mail",
+          "live 2026-11-18: 1 of 7 moves failed, the retry moved 2 messages"
+        ],
+        [
+          "New Yandex rule joins two conditions with «или» although «и» was intended",
+          "the create form defaults `conditions-logic-select` to «выполняется хотя бы одно из условий» (OR)",
+          "pick «выполняются все условия одновременно» before saving, or edit the rule and re-save",
+          "live 2026-11-18: the hh digest rule first matched all hh.ru mail, fixed by editing the rule"
+        ],
+        [
+          "CDP `Runtime.evaluate` hangs on `#setup/filters-create` and the target stops answering",
+          "a dirty settings form blocks hash navigation; the renderer wedges and a reload does not recover it",
+          "drive one rule per form load, close the form with «Отменить», and restart Chrome with the `chrome-yandex` profile if the renderer stops answering",
+          "live 2026-11-18: two timeouts at the taxi rule, resolved by a clean Chrome restart"
         ]
       ],
       "refs": [
         "https://yandex.ru/support/mail/mail-clients/others.html (IMAP/SMTP settings and app password)",
         "Yandex Mail: enable IMAP in the mailbox settings before the first login"
       ],
-      "smoke": "$user = Get-HubEnv 'YANDEX_MAIL_USER'\n$pass = Get-HubEnv 'YANDEX_MAIL_APP_PASSWORD'\nif (-not $user -or -not $pass) { throw 'no credentials' }\n$c = [System.Net.Sockets.TcpClient]::new()\n$c.Connect('imap.yandex.ru', 993)\n$c.ReceiveTimeout = 15000\n$ssl = [System.Net.Security.SslStream]::new($c.GetStream())\n$ssl.AuthenticateAsClient('imap.yandex.ru')\n$r = [System.IO.StreamReader]::new($ssl)\n$w = [System.IO.StreamWriter]::new($ssl)\n$w.AutoFlush = $true\n$greeting = $r.ReadLine()\n$w.WriteLine('a1 LOGIN ' + $user + ' ' + $pass)\n$resp = $r.ReadLine()\n$w.WriteLine('a2 LOGOUT')\n$c.Close()\nif ($resp -notmatch '^a1 OK') { throw ('login failed: ' + $resp) }\n'imap login ok'",
+      "smoke": "$user = Get-HubEnv 'YANDEX_MAIL_USER'\n$pass = Get-HubEnv 'YANDEX_MAIL_APP_PASSWORD'\nif (-not $user -or -not $pass) { throw 'no credentials' }\nfunction ConvertTo-ImapQuoted([string]$Value) { if ($null -eq $Value) { return '\"\"' } return '\"' + $Value.Replace('\\', '\\\\').Replace('\"', '\\\"') + '\"' }\n$c = [System.Net.Sockets.TcpClient]::new()\n$c.Connect('imap.yandex.ru', 993)\n$c.ReceiveTimeout = 15000\n$ssl = [System.Net.Security.SslStream]::new($c.GetStream())\n$ssl.AuthenticateAsClient('imap.yandex.ru')\n$r = [System.IO.StreamReader]::new($ssl)\n$w = [System.IO.StreamWriter]::new($ssl)\n$w.AutoFlush = $true\n$greeting = $r.ReadLine()\n$w.WriteLine('a1 LOGIN ' + (ConvertTo-ImapQuoted $user) + ' ' + (ConvertTo-ImapQuoted $pass))\n$resp = $null\nwhile ($null -ne ($line = $r.ReadLine())) { if ($line -match '^a1 ') { $resp = $line; break } }\nif (-not $resp) { $resp = '<no tagged response>' }\n$w.WriteLine('a2 LOGOUT')\n$c.Close()\nif ($resp -notmatch '^a1 OK') { throw ('login failed: ' + $resp) }\n'imap login ok'\n$smtp = [System.Net.Sockets.TcpClient]::new()\n$smtp.Connect('smtp.yandex.ru', 465)\n$smtp.ReceiveTimeout = 15000\n$smtpSsl = [System.Net.Security.SslStream]::new($smtp.GetStream())\n$smtpSsl.AuthenticateAsClient('smtp.yandex.ru')\n$sr = [System.IO.StreamReader]::new($smtpSsl)\n$sw = [System.IO.StreamWriter]::new($smtpSsl)\n$sw.AutoFlush = $true\nfunction Read-SmtpReply([System.IO.StreamReader]$Reader) {\n    $line = $Reader.ReadLine()\n    if ($null -eq $line) { return @{ Code = 0; Line = '<no reply>' } }\n    $code = 0\n    if ($line.Length -ge 3) { [void][int]::TryParse($line.Substring(0, 3), [ref]$code) }\n    while ($line.Length -gt 3 -and $line[3] -eq '-') {\n        $next = $Reader.ReadLine()\n        if ($null -eq $next) { break }\n        $line = $next\n    }\n    return @{ Code = $code; Line = $line }\n}\n$banner = Read-SmtpReply $sr\nif ($banner.Code -ne 220) { throw ('smtp greeting: ' + $banner.Line) }\n$sw.WriteLine('EHLO hub.smoke')\n$ehlo = Read-SmtpReply $sr\nif ($ehlo.Code -ne 250) { throw ('smtp EHLO: ' + $ehlo.Line) }\n$sw.WriteLine('AUTH LOGIN')\nif ((Read-SmtpReply $sr).Code -ne 334) { throw 'smtp AUTH LOGIN rejected' }\n$sw.WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($user)))\nif ((Read-SmtpReply $sr).Code -ne 334) { throw 'smtp AUTH username rejected' }\n$sw.WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pass)))\n$auth = Read-SmtpReply $sr\n$sw.WriteLine('QUIT')\n$smtp.Close()\nif ($auth.Code -ne 235) { throw ('smtp auth: ' + $auth.Line) }\n'smtp auth ok'",
       "evals": [
-        "verify.ps1 -Offline exits 0 and prints READY: blocked (missing: YANDEX_MAIL_USER, YANDEX_MAIL_APP_PASSWORD)",
-        "verify.ps1 -Live without env exits 2 without a network call",
-        "with credentials, -Live logs in over IMAP and prints imap login ok"
+        "`-Offline` exits 0 and prints the `ENV:` names plus a `READY:` line",
+        "`-Live -EnvSource Process` without env exits 2 before any network call",
+        "with credentials, `-Live` logs in over IMAP and authenticates over SMTP",
+        "`mailbox.py --summary` reports per-folder counts",
+        "`mailbox.py --summary --env-source process` without env exits 2 without a network call",
+        "`send.py --check` authenticates over SMTP without sending",
+        "`send.py` refuses to deliver without `--confirm-send`",
+        "a real delivery is proven once by a letter to the hub mailbox",
+        "`organize.py --plan` prints the folder plan and creates nothing",
+        "`organize.py --move` without `--confirm` exits 3 before any IMAP call"
+      ],
+      "contract_version": 2,
+      "eval_rows": [
+        {
+          "task": "`-Offline` exits 0 and prints the `ENV:` names plus a `READY:` line",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Offline`",
+          "expected": "exit 0"
+        },
+        {
+          "task": "`-Live -EnvSource Process` without env exits 2 before any network call",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live -EnvSource Process`",
+          "expected": "exit 2"
+        },
+        {
+          "task": "with credentials, `-Live` logs in over IMAP and authenticates over SMTP",
+          "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live`",
+          "expected": "exit 0 and `EVIDENCE: imap login ok smtp auth ok`"
+        },
+        {
+          "task": "`mailbox.py --summary` reports per-folder counts",
+          "grader": "`python -X utf8 scripts/mailbox.py --summary`",
+          "expected": "exit 0 and one `EVIDENCE:` line"
+        },
+        {
+          "task": "`mailbox.py --summary --env-source process` without env exits 2 without a network call",
+          "grader": "`python -X utf8 scripts/mailbox.py --summary --env-source process`",
+          "expected": "exit 2"
+        },
+        {
+          "task": "`send.py --check` authenticates over SMTP without sending",
+          "grader": "`python -X utf8 scripts/send.py --check`",
+          "expected": "exit 0 and `EVIDENCE: smtp auth ok`"
+        },
+        {
+          "task": "`send.py` refuses to deliver without `--confirm-send`",
+          "grader": "`python -X utf8 scripts/send.py --to probe@example.com --subject probe --body x`",
+          "expected": "exit 3 and `STATUS: REFUSED`"
+        },
+        {
+          "task": "a real delivery is proven once by a letter to the hub mailbox",
+          "grader": "- (not runnable in CI: sends a real message)",
+          "expected": "n/a (recorded 2026-11-18: INBOX UID 6547)"
+        },
+        {
+          "task": "`organize.py --plan` prints the folder plan and creates nothing",
+          "grader": "`python -X utf8 scripts/organize.py --plan`",
+          "expected": "exit 0 and `EVIDENCE: plan existing=<n> to_create=<n>`"
+        },
+        {
+          "task": "`organize.py --move` without `--confirm` exits 3 before any IMAP call",
+          "grader": "`python -X utf8 scripts/organize.py --move --from INBOX --to \"Работа\"`",
+          "expected": "exit 3 and `STATUS: REFUSED`"
+        }
+      ],
+      "required_files": [
+        "scripts/mailbox.py",
+        "scripts/send.py",
+        "scripts/organize.py",
+        ".kilo/skills/yandex-mail/references/access-setup.md",
+        ".kilo/skills/yandex-mail/references/mailbox-audit.md"
+      ],
+      "skill_note": "- `.kilo/skills/yandex-mail/references/access-setup.md` — app password, IMAP enablement, visible Chrome/CDP handoff and secret handling.\n- `.kilo/skills/yandex-mail/references/mailbox-audit.md` — read-only inventory: folders, counts, senders, previews.\n- `scripts/mailbox.py` — read-only IMAP inventory (`--summary`, `--folders`, `--list`, `--search`, `--show`).\n- `scripts/send.py` — SMTP send (`--check` is AUTH-only; delivery requires `--confirm-send`).\n- `scripts/organize.py` — folders and filing (`--plan` is read-only; `CREATE`/`UID MOVE` need `--confirm`).",
+      "agents_note": "- Read-only mailbox inventory: `scripts/mailbox.py` (see `.kilo/skills/yandex-mail/references/mailbox-audit.md`).\n- Access setup without an MCP browser: `.kilo/skills/yandex-mail/references/access-setup.md` (visible Chrome + CDP).\n- Send: `scripts/send.py` (write, needs `--confirm-send`; `--check` is read-only AUTH).\n- Folders and filing: `python -X utf8 scripts/organize.py --plan` (read-only); `CREATE`/`UID MOVE` need\n  `--confirm`, and `--move` never deletes, so every step is reversible.\n- Filter rules have no IMAP/API surface: set them in the web UI at `#setup/filters`; drive one rule per\n  form load and pick «выполняются все условия одновременно» for AND (see `FAILURES.md`).",
+      "extra_sections": [
+        {
+          "title": "Sending a message",
+          "body": "```powershell\npython -X utf8 scripts/send.py --check                       # AUTH only, nothing is queued\npython -X utf8 scripts/send.py --to a@example.com --subject \"Report\" --body \"Done\" --confirm-send\npython -X utf8 scripts/send.py --to a@example.com --subject \"Report\" --body-file out.txt --confirm-send\n```\n\n- Port 465 uses implicit TLS; 587 connects then upgrades with STARTTLS.\n- The subject is RFC 2047 encoded and the body is base64 UTF-8, so Cyrillic is safe.\n- `--body-file` reads a UTF-8 file; `--reply-to` and `--from` (a verified alias) are optional.\n- The message gets `Date`, `Message-ID` and a `From` equal to the mailbox address by default.\n- Exit 3 means the write was refused: pass `--confirm-send` only after an explicit user decision.\n- Yandex does **not** copy the message into Sent; append it over IMAP if the consumer needs the thread.\n- Delivered evidence (2026-11-18): `EVIDENCE: sent ... at=2026-11-18T14:35:26`, INBOX UID 6547."
+        }
       ]
     },
     {
