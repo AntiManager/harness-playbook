@@ -365,6 +365,18 @@
           "daily points spent",
           "wait for reset or reduce requests",
           "Units header"
+        ],
+        [
+          "error 58 `Незавершенная регистрация`",
+          "OAuth app has no approved API access request in the Direct interface",
+          "submit the request in Direct -> Settings -> API, then wait for approval; the gate returns exit 2",
+          "observed 2026-11-18, request_id 8854674590803321142"
+        ],
+        [
+          "gate printed `OK (live)` on an error body",
+          "`Invoke-RestMethod` does not throw on a 200 JSON `error` object",
+          "fixed 2026-11-18: the smoke checks `$r.error`, 58 -> exit 2, 53 -> exit 1",
+          "this repo, `scripts/verify.ps1`"
         ]
       ],
       "refs": [
@@ -372,7 +384,7 @@
         "https://yandex.ru/dev/direct/doc/ru/access-request.md",
         "https://github.com/Silverov/yandex-direct-skill (audit methodology, MIT)"
       ],
-      "smoke": "$token = Get-HubEnv 'YANDEX_DIRECT_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'Bearer ' + $token; 'Accept-Language' = 'ru' }\n$b = '{\"method\":\"get\",\"params\":{\"SelectionCriteria\":{},\"FieldNames\":[\"Id\",\"Name\"]}}'\n$r = Invoke-RestMethod -Uri ($base + '/json/v5/campaigns') -Method Post -Headers $h -ContentType 'application/json; charset=utf-8' -Body $b -TimeoutSec 30\n\"campaigns: $($r.result.Campaigns.Count) host=$base\"",
+      "smoke": "$token = Get-HubEnv 'YANDEX_DIRECT_TOKEN'\nif (-not $token) { throw 'no token' }\n$h = @{ Authorization = 'Bearer ' + $token; 'Accept-Language' = 'ru' }\n$b = '{\"method\":\"get\",\"params\":{\"SelectionCriteria\":{},\"FieldNames\":[\"Id\",\"Name\"]}}'\n$r = Invoke-RestMethod -Uri ($base + '/json/v5/campaigns') -Method Post -Headers $h -ContentType 'application/json; charset=utf-8' -Body $b -TimeoutSec 30\nif ($r.error) {\n    $code = $r.error.error_code\n    Write-Output ('API-ERROR: ' + $code + ' ' + $r.error.error_string + ' — ' + $r.error.error_detail)\n    if ($code -eq 58) { Write-Output 'STATUS: BLOCKED (access request not approved)'; exit 2 }\n    if ($code -eq 53) { Write-Output 'STATUS: FAIL (token rejected)'; exit 1 }\n    Write-Output 'STATUS: FAIL (live smoke: API error)'; exit 1\n}\n\"campaigns: $($r.result.Campaigns.Count) host=$base\"",
       "eval_rows": [
         {
           "task": "`-Offline` exits 0 and prints `ENV:` for the three names plus `HOST:`",
@@ -387,7 +399,7 @@
         {
           "task": "`-Live` lists campaigns on the selected host",
           "grader": "`pwsh -NoProfile -File scripts/verify.ps1 -Live`",
-          "expected": "exit 0 and one `campaigns:` line"
+          "expected": "exit 0 with one `campaigns:` line, or exit 2 with `API-ERROR: 58` while the access request is pending"
         },
         {
           "task": "a mutation call without confirm is refused",
