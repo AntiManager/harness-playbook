@@ -1337,21 +1337,21 @@
       "dir": "integration-google",
       "slug": "google",
       "title": "Google APIs (OAuth 2.0)",
-      "service": "Google OAuth 2.0 with Search Console, Drive, Sheets and Cloud Translation",
+      "service": "Google OAuth 2.0 with Search Console, GA4, Drive, Sheets and Cloud Translation",
       "status": "live",
-      "mode": "read (Search Console via a service account; Drive/Sheets read-only on demand; OIDC sign-in later)",
-      "contract_version": 2,
-      "summary": "One credential model for Google APIs, anchored on a service account (GOOGLE_APPLICATION_CREDENTIALS) so no 7-day Testing-mode expiry and no app verification are needed. Primary scope is Google Search Console (sites, search analytics, sitemaps); Drive and Sheets are read-only options; Cloud Translation absorbs the former google-translate deferred entry. Gmail and restricted Drive scopes are out of scope until Google verification and a CASA assessment exist.",
+      "mode": "read (Search Console and GA4 reporting via a service account; Drive/Sheets read-only on demand; OIDC sign-in later)",
+      "contract_version": 3,
+      "summary": "One credential model for Google APIs, anchored on a service account (GOOGLE_APPLICATION_CREDENTIALS) so no 7-day Testing-mode expiry and no app verification are needed. Scope: Google Search Console (sites, search analytics, sitemaps) and GA4 reporting (Admin API streams, Data API core and realtime reports); Drive and Sheets are read-only options; Cloud Translation absorbs the former google-translate deferred entry. Gmail and restricted Drive scopes are out of scope until Google verification and a CASA assessment exist.",
       "consumers": [
-        "AntiManager: Search Console API and SEO reporting (antimanager.pro verified 2026-11-18)",
-        "exhomebird and linear-tech: Search Console API (exhomebird.ru verified 2026-11-18; linear-tech pending)",
+        "AntiManager: Search Console API and GA4 reporting for antimanager.pro (property 565081676, stream G-SPP5X4CDDW; verified 2026-11-18)",
+        "exhomebird: Search Console API and GA4 reporting for exhomebird.ru (property 500449244, stream G-5VK11HVRMG; verified 2026-11-18); linear-tech pending",
         "Excell_Translator: Cloud Translation v2 (planned migration)",
         "Proc_library: Google sign-in via OIDC (later)"
       ],
       "auth": [
         "GOOGLE_APPLICATION_CREDENTIALS"
       ],
-      "auth_notes": "Primary: a service-account JSON key whose path is in GOOGLE_APPLICATION_CREDENTIALS, stored outside the repo with a restricted ACL; add the service-account email as a user of every Search Console property (Restricted access is enough for reads). No refresh token, no 7-day expiry, no app verification. Fallback for interactive consent: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN from an installed-app loopback flow on http://127.0.0.1:<port>; a Testing consent screen expires that token in 7 days. Optional GOOGLE_PROJECT_ID for quota attribution. The oob redirect is removed; do not use it.",
+      "auth_notes": "Primary and only path: a service-account JSON key whose path is in GOOGLE_APPLICATION_CREDENTIALS, stored outside the repo with a restricted ACL. Add the service-account email as a user of every Search Console property (Restricted access is enough for reads) and as a Viewer on the Google Analytics account (an account-level grant covers current and future GA4 properties). Optional GOOGLE_PROJECT_ID for quota attribution. The user-OAuth fallback (GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_OAUTH_REFRESH_TOKEN) was retired on 2026-11-18; do not build on it. The oob redirect is removed; do not use it.",
       "endpoints": [
         "POST https://oauth2.googleapis.com/token (code and refresh exchange)",
         "POST https://oauth2.googleapis.com/revoke",
@@ -1359,6 +1359,10 @@
         "GET https://www.googleapis.com/webmasters/v3/sites",
         "POST https://www.googleapis.com/webmasters/v3/sites/{siteUrl}/searchAnalytics/query",
         "PUT https://www.googleapis.com/webmasters/v3/sites/{siteUrl}/sitemaps/{feedpath}",
+        "GET https://analyticsadmin.googleapis.com/v1beta/accountSummaries (GA4 accounts and properties)",
+        "GET https://analyticsadmin.googleapis.com/v1beta/properties/{propertyId}/dataStreams (web stream and measurement ID)",
+        "POST https://analyticsdata.googleapis.com/v1beta/properties/{propertyId}:runReport",
+        "POST https://analyticsdata.googleapis.com/v1beta/properties/{propertyId}:runRealtimeReport",
         "GET https://www.googleapis.com/drive/v3/files (drive.file or drive.readonly)",
         "GET https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{range}",
         "POST https://translation.googleapis.com/language/translate/v2"
@@ -1367,40 +1371,37 @@
         "Search Analytics: 1200 QPM per site and per user; per-project 40000 QPM and 30000000 QPD",
         "Search Analytics: at most 25000 rows per request, 16 months of history, 2-3 day data lag",
         "URL inspection: 2000 QPD and 600 QPM per site",
+        "GA4 Data API (standard property): 200000 core tokens per property per day, 40000 per hour and 14000 per project per property per hour; 10 concurrent requests; realtime has the same token caps and is charged separately from core",
+        "GA4 Data API: any empty token bucket returns 429 RESOURCE_EXHAUSTED; daily quotas reset at midnight Pacific; set returnPropertyQuota to read the balances",
+        "GA4 Admin API quotas are separate from the Data API; read calls need analytics.readonly",
         "All other resources: 20 QPS and 200 QPM per user",
-        "Quotas are per Google Cloud project"
+        "Quotas are charged to the project of the calling credentials"
       ],
       "gotchas": [
-        "A consent screen in Testing issues a refresh token that expires in 7 days; publishing the app needs Google verification of the sensitive Search Console/Sheets scopes (verified domain, privacy policy, review), so rotation or a service account is the practical answer",
         "Gmail and most Drive scopes are restricted: Google verification plus a CASA security assessment is required; do not start there",
         "sc-domain:example.com and https://example.com/ are different siteUrl values",
-        "The oob redirect was removed; use a loopback redirect",
-        "A service account must be added as a user in Search Console before it can read a property",
-        "The Testing-mode 7-day expiry also breaks long-running scheduled jobs",
-        "A service account avoids the 7-day expiry and app verification, but its JSON key is a long-lived secret: keep it in GOOGLE_APPLICATION_CREDENTIALS outside the repo (ACL-restricted, never copied into a repo) and add its email as a user of every Search Console property; a leaked key is revoked in IAM & Admin > Service accounts > Keys",
+        "A service account must be added as a user in Search Console and as a Viewer in Google Analytics before it can read either",
+        "The service-account JSON key is a long-lived secret: keep it in GOOGLE_APPLICATION_CREDENTIALS outside the repo (ACL-restricted, never copied into a repo); a leaked key is revoked in IAM & Admin > Service accounts > Keys",
         "Search Console HTML-tag verification is lost when a site rebuild drops the meta tag, so the verification code must live in the site build input (AntiManager reads GOOGLE_VERIFICATION from .env) and be re-checked after every deploy of that site",
-        "token_expires_on in state.json tracks only the user-OAuth fallback (Testing = issue date + 7 days); with a service account as the auth path drop the field, because an expired value fails selfcheck; after rotating a refresh token update it in the same change",
+        "GA4 property creation requires accepting the Analytics terms; the property ID (properties/565081676) and the stream measurement ID (G-SPP5X4CDDW) are different identifiers",
+        "Account-level Viewer in Google Analytics covers all current and future properties in that account; a property-level grant covers one property only",
+        "analyticsadmin.googleapis.com and analyticsdata.googleapis.com are separate APIs and both must be enabled in the Cloud project; a disabled one returns 403 SERVICE_DISABLED",
         "Requests may need the local proxy; a timeout is not an auth error",
-        "Through the local proxy the TLS connection to oauth2.googleapis.com or www.googleapis.com is reset intermittently (observed 2 of 4 attempts), so the live smoke retries three times with backoff before failing"
+        "Through the local proxy the TLS connection to oauth2.googleapis.com, www.googleapis.com or analytics*.googleapis.com is reset intermittently (observed 2 of 4 attempts), so the live smoke retries three times with backoff before failing",
+        "The user-OAuth fallback was retired on 2026-11-18; GOOGLE_OAUTH_* and state.json token_expires_on are not part of the auth path, so nothing may depend on them"
       ],
       "failures": [
         [
-          "invalid_grant",
-          "refresh token expired, revoked, or hit the Testing-mode 7-day expiry",
-          "re-run the consent flow and update GOOGLE_OAUTH_REFRESH_TOKEN",
-          "-"
-        ],
-        [
           "403 insufficientPermissions",
-          "scope missing or the account is not a property user",
-          "add the scope and the account to the Search Console property",
+          "the scope is missing or the service account is not a user of that property",
+          "add the scope and the service-account email to the Search Console property or the GA4 account, then re-run -Live",
           "-"
         ],
         [
           "sites list is empty or 403 PERMISSION_DENIED for the service account",
           "the service-account email is not a user of that Search Console property",
           "add the service-account email under Settings > Users and permissions (Restricted access), then re-run -Live",
-          "2026-11-18: service account added as Restricted user, sites: 1"
+          "2026-11-18: service account added as Restricted user; sites: 2"
         ],
         [
           "property shows as unverified after a site deploy",
@@ -1415,22 +1416,22 @@
           "-"
         ],
         [
-          "redirect_uri_mismatch",
-          "redirect URI not registered for the client",
-          "register the exact loopback URI in the OAuth client",
+          "403 SERVICE_DISABLED from analyticsadmin.googleapis.com or analyticsdata.googleapis.com",
+          "the Analytics Admin or Data API is not enabled in the Cloud project",
+          "enable both APIs in the console for the project, wait a few minutes, then retry",
+          "2026-11-18: both APIs enabled in project 180088300688; accountSummaries returned 200"
+        ],
+        [
+          "GA4 accountSummaries is empty although the service account was added to a property",
+          "the grant was property-level, not account-level, so property discovery does not list it",
+          "add the service-account email as Viewer on the Analytics account and re-run -Live",
+          "2026-11-18: account-level Viewer on both accounts; dataStreams returns both streams"
+        ],
+        [
+          "429 RESOURCE_EXHAUSTED from analyticsdata.googleapis.com",
+          "a GA4 token bucket is empty (per property per hour or per day)",
+          "back off, request fewer rows and dimensions, inspect propertyQuota, retry after the bucket resets",
           "-"
-        ],
-        [
-          "access_denied: The developer hasn't given you access to this app",
-          "the consent screen is in Testing and the account is not a saved test user (the email chip must be committed with Enter before Save)",
-          "add the account under Audience > Test users, confirm the counter shows 1 user, then retry the consent URL",
-          "2026-11-18: Access blocked page shown right after the consent URL"
-        ],
-        [
-          "Playwright or automated Chromium cannot complete the Google sign-in",
-          "Google refuses account login from automation-controlled browsers",
-          "log in manually in the Playwright window; if the automation is rejected, run the consent flow in a normal browser",
-          "2026-11-18: manual sign-in in the Playwright window, consent in the same session"
         ],
         [
           "timeout or connection reset",
@@ -1441,15 +1442,49 @@
       ],
       "refs": [
         "https://developers.google.com/webmaster-tools/limits (quota table)",
-        "https://developers.google.com/identity/protocols/oauth2/native-app (loopback flow)",
-        "https://developers.google.com/webmaster-tools/v1/searchanalytics/query (query contract)"
+        "https://developers.google.com/identity/protocols/oauth2/service-account (service-account flow)",
+        "https://developers.google.com/webmaster-tools/v1/searchanalytics/query (query contract)",
+        "https://developers.google.com/analytics/devguides/reporting/data/v1/quotas (GA4 Data API quotas)",
+        "https://developers.google.com/analytics/devguides/config/admin/v1 (GA4 Admin API)"
       ],
-      "smoke": "$keyPath = Get-HubEnv 'GOOGLE_APPLICATION_CREDENTIALS'\nif (-not $keyPath) { throw 'GOOGLE_APPLICATION_CREDENTIALS is not set' }\nif (-not (Test-Path -LiteralPath $keyPath)) { throw ('service-account key not found: ' + $keyPath) }\n$sa = Get-Content -LiteralPath $keyPath -Raw | ConvertFrom-Json\nfunction To-B64Url([byte[]]$bytes) { [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_') }\nfunction Invoke-GoogleApi([scriptblock]$call) { $last = $null; foreach ($attempt in 1..3) { try { return (& $call) } catch { $last = $_; Start-Sleep -Seconds (2 * $attempt) } }; throw $last }\n$now = [int][double]::Parse((Get-Date -Date (Get-Date).ToUniversalTime() -UFormat %s))\n$jwtHeader = @{ alg = 'RS256'; typ = 'JWT' } | ConvertTo-Json -Compress\n$jwtClaims = @{ iss = $sa.client_email; scope = 'https://www.googleapis.com/auth/webmasters.readonly'; aud = 'https://oauth2.googleapis.com/token'; exp = $now + 3600; iat = $now } | ConvertTo-Json -Compress\n$unsigned = (To-B64Url ([Text.Encoding]::UTF8.GetBytes($jwtHeader))) + '.' + (To-B64Url ([Text.Encoding]::UTF8.GetBytes($jwtClaims)))\n$rsa = [System.Security.Cryptography.RSA]::Create()\ntry { $rsa.ImportFromPem($sa.private_key); $sig = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($unsigned), [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1) } finally { $rsa.Dispose() }\n$assertion = $unsigned + '.' + (To-B64Url $sig)\n$body = @{ grant_type = 'urn:ietf:params:oauth:grant-type:jwt-bearer'; assertion = $assertion }\n$tok = Invoke-GoogleApi { Invoke-RestMethod -Uri 'https://oauth2.googleapis.com/token' -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $body -TimeoutSec 30 }\n$h = @{ Authorization = 'Bearer ' + $tok.access_token }\n$sites = Invoke-GoogleApi { Invoke-RestMethod -Uri 'https://www.googleapis.com/webmasters/v3/sites' -Headers $h -TimeoutSec 30 }\n$count = 0\nif ($null -ne $sites.siteEntry) { $count = @($sites.siteEntry).Count }\n'sites: ' + $count",
-      "evals": [
-        "verify.ps1 -Offline exits 0 and prints READY: blocked (missing: GOOGLE_APPLICATION_CREDENTIALS)",
-        "verify.ps1 -Live without env exits 2 without a network call",
-        "verify.ps1 -Live with a service-account key fails with a clear message when the key path does not exist",
-        "with a service-account key, -Live signs a JWT, exchanges it and prints the Search Console site count"
+      "smoke": "$keyPath = Get-HubEnv 'GOOGLE_APPLICATION_CREDENTIALS'\nif (-not $keyPath) { throw 'GOOGLE_APPLICATION_CREDENTIALS is not set' }\nif (-not (Test-Path -LiteralPath $keyPath)) { throw ('service-account key not found: ' + $keyPath) }\n$sa = Get-Content -LiteralPath $keyPath -Raw | ConvertFrom-Json\nfunction To-B64Url([byte[]]$bytes) { [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_') }\nfunction Invoke-GoogleApi([scriptblock]$call) { $last = $null; foreach ($attempt in 1..3) { try { return (& $call) } catch { $last = $_; Start-Sleep -Seconds (2 * $attempt) } }; throw $last }\n$now = [int][double]::Parse((Get-Date -Date (Get-Date).ToUniversalTime() -UFormat %s))\n$jwtHeader = @{ alg = 'RS256'; typ = 'JWT' } | ConvertTo-Json -Compress\n$jwtClaims = @{ iss = $sa.client_email; scope = 'https://www.googleapis.com/auth/webmasters.readonly https://www.googleapis.com/auth/analytics.readonly'; aud = 'https://oauth2.googleapis.com/token'; exp = $now + 3600; iat = $now } | ConvertTo-Json -Compress\n$unsigned = (To-B64Url ([Text.Encoding]::UTF8.GetBytes($jwtHeader))) + '.' + (To-B64Url ([Text.Encoding]::UTF8.GetBytes($jwtClaims)))\n$rsa = [System.Security.Cryptography.RSA]::Create()\ntry { $rsa.ImportFromPem($sa.private_key); $sig = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($unsigned), [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1) } finally { $rsa.Dispose() }\n$assertion = $unsigned + '.' + (To-B64Url $sig)\n$body = @{ grant_type = 'urn:ietf:params:oauth:grant-type:jwt-bearer'; assertion = $assertion }\n$tok = Invoke-GoogleApi { Invoke-RestMethod -Uri 'https://oauth2.googleapis.com/token' -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $body -TimeoutSec 30 }\n$h = @{ Authorization = 'Bearer ' + $tok.access_token }\n$sites = Invoke-GoogleApi { Invoke-RestMethod -Uri 'https://www.googleapis.com/webmasters/v3/sites' -Headers $h -TimeoutSec 30 }\n$count = 0\nif ($null -ne $sites.siteEntry) { $count = @($sites.siteEntry).Count }\n$summaries = Invoke-GoogleApi { Invoke-RestMethod -Uri 'https://analyticsadmin.googleapis.com/v1beta/accountSummaries' -Headers $h -TimeoutSec 30 }\n$ga = 0\nif ($null -ne $summaries.accountSummaries) { foreach ($account in @($summaries.accountSummaries)) { if ($null -ne $account.propertySummaries) { $ga += @($account.propertySummaries).Count } } }\n'sites: ' + $count + '; ga4Properties: ' + $ga",
+      "eval_rows": [
+        {
+          "task": "verify.ps1 -Offline exits 0 and prints a READY line (blocked when the env var is absent)",
+          "grader": "`scripts/verify.ps1 -Offline`",
+          "expected": "exit 0"
+        },
+        {
+          "task": "verify.ps1 -Live without env exits 2 without a network call",
+          "grader": "`scripts/verify.ps1 -Live`",
+          "expected": "exit 2"
+        },
+        {
+          "task": "verify.ps1 -Live fails with a clear message when the service-account key path does not exist",
+          "grader": "`scripts/verify.ps1 -Live`",
+          "expected": "exit 1"
+        },
+        {
+          "task": "with a service-account key, -Live signs a JWT, exchanges it and prints the Search Console site count and the GA4 property count",
+          "grader": "`scripts/verify.ps1 -Live`",
+          "expected": "exit 0"
+        },
+        {
+          "task": "the drift check reports no generated file differing from the registry",
+          "grader": "`python -X utf8 C:\\Work\\Python\\harness-playbook\\scripts\\new_integration_hub.py --only google --check`",
+          "expected": "0 drift"
+        },
+        {
+          "task": "selfcheck passes with the registry present",
+          "grader": "`scripts/selfcheck.ps1 -RequireRegistry`",
+          "expected": "SELFCHECK: OK"
+        }
+      ],
+      "extra_sections": [
+        {
+          "title": "GA4 resources (2026-11-18)",
+          "body": "| Site | Analytics account | Property | Stream | Measurement ID |\n|---|---|---|---|---|\n| antimanager.pro | 416853412 | 565081676 | AntiManager Web | G-SPP5X4CDDW |\n| exhomebird.ru | 364629301 | 500449244 | ExHomeBird | G-5VK11HVRMG |\n\nThe service account is a Viewer on both accounts (account level), so future properties in these accounts are readable without another grant. The gtag snippet is emitted only under `isProd`; both sites also keep Yandex Metrica."
+        }
       ]
     }
   ],
